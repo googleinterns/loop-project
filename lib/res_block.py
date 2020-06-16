@@ -1,11 +1,10 @@
-
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
 import numpy as np
 
 class ResBlock(tf.keras.Model):
-  """ A ResBlock module class with expansion, depthwise consolution and 
+  """ A ResBlock module class with expansion, depthwise convolution and 
   projection.
 
   In this ResBlock, standard 2D convolutions are replaced by 1x1 convolution 
@@ -56,15 +55,14 @@ class ResBlock(tf.keras.Model):
     x = self.conv3(x)
     x = self.bn3(x, training=training)
     x += input_tensor
-    return self.activation(x)
+    return x
 
 
   def set_activation_fn(self, activation):
     switcher = {'relu': tf.nn.relu,
                 'relu6': tf.nn.relu6,
                 'lrelu': tf.nn.leaky_relu,
-                'swish': tf.nn.swish,
-                }
+                'swish': tf.nn.swish}
 
     res = switcher.get(activation)
     if not res:
@@ -77,4 +75,3 @@ class ResBlock(tf.keras.Model):
       raise ValueError('The channel dimension of the inputs '
                        'should be defined. Found `None`.')
     return int(input_shape[-1])
-

@@ -1,12 +1,8 @@
-
 import tensorflow as tf
 from tensorflow import keras
 import numpy as np
 import unittest
-
 from lib import res_block
-
-
 
 class BlockTest(tf.test.TestCase):
   def setUp(self):
@@ -22,13 +18,6 @@ class BlockTest(tf.test.TestCase):
   def test_basic(self):
     """Checking if the input and output tensors shapes match."""
     input_shape = (32, 128, 128, 64)
-    input_val = tf.random.normal([*input_shape])
-    out = self._run_standard_block(input_val)
-    self.assertShapeEqual(input_val.numpy(), out)
-
-  def test_standard_input(self):
-    """Checking that input / output shapes match on input (8, 16, 16, 40)."""
-    input_shape = (8, 16, 16, 40)
     input_val = tf.random.normal([*input_shape])
     out = self._run_standard_block(input_val)
     self.assertShapeEqual(input_val.numpy(), out)
@@ -51,14 +40,6 @@ class BlockTest(tf.test.TestCase):
                                  expansion_factor=6,
                                  activation='sigmoid')
 
-
-
-
 if __name__ == '__main__':
     unittest.main(argv=['first-arg-is-ignored'], exit=False)
-
-
-
-
-
 
