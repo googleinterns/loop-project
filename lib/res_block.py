@@ -1,30 +1,26 @@
 import tensorflow as tf
-from tensorflow import keras
-from tensorflow.keras import layers
-import numpy as np
 
 class ResBlock(tf.keras.Model):
-  """ A ResBlock module class with expansion, depthwise convolution and 
-  projection.
+  """A ResBlock module class with expansion, depthwise conv and projection.
 
-  In this ResBlock, standard 2D convolutions are replaced by 1x1 convolution 
+  In this ResBlock, standard 2D convolutions are replaced by 1x1 convolution
   that expands the input tensor along the channel dimension, depthwise
   convolution and 1x1 convolution that projects the tensor back to the original
   number of channels.
 
    Args: 
      kernel_size: size of the depthwise convolution kernel
-     expansion_factor: expansion factor of the first 1x1 convolution. 
-     e.g., if the input tensor has N channels, then the first 1x1 
+     expansion_factor: expansion factor of the first 1x1 convolution.
+     e.g., if the input tensor has N channels, then the first 1x1
      convolution layer will expand it to expansion_factor*N channels.
      activation: activation function. Supported functions: 'relu',
-     'relu6', 'lrelu', 'swish'."""
-
+     'relu6', 'lrelu', 'swish'.
+  """
   def __init__(self, kernel_size=3, expansion_factor=6, activation='relu'):
     super(ResBlock, self).__init__(name='')
     if expansion_factor < 1:
       raise ValueError('The expansion factor value should be '
-      'greater than or equal to one.')
+                       'greater than or equal to one.')
 
     self.expansion_factor = expansion_factor
     self.activation = self.set_activation_fn(activation)
@@ -57,17 +53,14 @@ class ResBlock(tf.keras.Model):
     x += input_tensor
     return x
 
-
   def set_activation_fn(self, activation):
     switcher = {'relu': tf.nn.relu,
                 'relu6': tf.nn.relu6,
                 'lrelu': tf.nn.leaky_relu,
                 'swish': tf.nn.swish}
-
     res = switcher.get(activation)
     if not res:
       raise Exception("Given activation function is not supported.")
-
     return res
 
   def _get_input_channel(self, input_shape):

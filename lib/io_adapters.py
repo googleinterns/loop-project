@@ -1,7 +1,7 @@
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
-import numpy as np
+
 
 def create_input_adapter(input_shape, size=16, depth=40, activation=None):
   """Creates an input adapter module for the input image.
@@ -14,7 +14,7 @@ def create_input_adapter(input_shape, size=16, depth=40, activation=None):
     size: height and width of the output tensor after space2depth operation.
     depth: number of channels in the output tensor.
     activation: conv layer activation function."""
-  h, w, c = input_shape
+  h, w, _ = input_shape
   if h < size or w < size:
     raise ValueError('Input height and width should be greater than `size`.')
   # `block_size` of space2depth
@@ -30,9 +30,10 @@ def create_input_adapter(input_shape, size=16, depth=40, activation=None):
   model = keras.Model(inputs, outputs, name='in_adapter')
   return model
 
+
 def create_output_adapter(input_shape, block_size=None, pool_stride=None,
                           activation='swish', depthwise=True):
-  """ Creates an output adapter module that processes tensors before
+  """Creates an output adapter module that processes tensors before
   passing them to fully connected layers.
   Arguments:
     input_shape: shape of the input tensor (HxWxC).
@@ -47,8 +48,8 @@ def create_output_adapter(input_shape, block_size=None, pool_stride=None,
   if not isinstance(block_size, int) or block_size < 1:
     raise ValueError("block_size must be a positive integer.")
 
-  if pool_stride != None and (not isinstance(pool_stride, int) or
-                              pool_stride < 1):
+  if pool_stride is not None and (not isinstance(pool_stride, int) or
+                                  pool_stride < 1):
     raise ValueError("pool_stride be a positive integer or None.")
 
   if len(input_shape) != 3:
