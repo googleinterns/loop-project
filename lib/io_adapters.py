@@ -19,8 +19,6 @@ def create_input_adapter(input_shape, size=16, depth=40, activation=None):
     raise ValueError('Input height and width should be greater than `size`.')
   # `block_size` of space2depth
   block_size = min(h / size, w / size)
-  if depth % (block_size * block_size) != 0:
-    raise ValueError('depth value is not devisible by the computed block size')
 
   # creating an adapter model
   inputs = keras.Input(shape=input_shape)
@@ -32,7 +30,7 @@ def create_input_adapter(input_shape, size=16, depth=40, activation=None):
 
 
 def create_output_adapter(input_shape, block_size=None, pool_stride=None,
-                          activation='swish', depthwise=True):
+                          activation='swish', depthwise=True, dropout=0):
   """Creates an output adapter module that processes tensors before
   passing them to fully connected layers.
   Arguments:
@@ -41,7 +39,8 @@ def create_output_adapter(input_shape, block_size=None, pool_stride=None,
     value is 4.
     pool_stride: stride of average pooling.
     activation: activation function.
-    depthwise: whether to use depthwise convolution."""
+    depthwise: whether to use depthwise convolution.
+    dropout: dropout parameter (drop)."""
   if not block_size:
     block_size = 4
 
@@ -56,19 +55,87 @@ def create_output_adapter(input_shape, block_size=None, pool_stride=None,
     raise ValueError("input_shape must be a tuple of size 3.")
 
   h, w, _ = input_shape
-  inputs = keras.Input(shape=input_shape)
+  inputs = tf.keras.Input(shape=input_shape)
   kernel_size = (tf.round(h / block_size), tf.round(w / block_size))
 
-  x = tf.keras.layers.AveragePooling2D(pool_size=kernel_size,
-                                       strides=pool_stride,
-                                       padding='valid')(inputs)
+  x = layers.AveragePooling2D(pool_size=kernel_size,
+                              strides=pool_stride,
+                              padding='valid')(inputs)
   if depthwise:
-    x = tf.keras.layers.DepthwiseConv2D(kernel_size=1,
-                                        activation=activation)(x)
+    x = layers.DepthwiseConv2D(kernel_size=1,
+                               activation=activation)(x)
   else:
-    x = tf.keras.layers.Activation(activation)(x)
-
-  x = tf.keras.layers.Flatten(data_format='channels_last')(x)
+    x = layers.Activation(activation)(x)
+  x = layers.Dropout(dropout)(x)
+  x = layers.Flatten(data_format='channels_last')(x)
   outputs = tf.expand_dims(tf.expand_dims(x, axis=1), axis=1)
   model = keras.Model(inputs, outputs, name='out_adapter')
+  return model
+
+def create_output_adapter_isometric(input_shape, filters=None, pool_size=None,
+                        activation='relu', dropout=0):
+  """ Creates an output adapter module that processes tensors before
+  passing them to fully connected layers.
+
+  Arguments:
+  input_shape: shape of the input tensor (HxWxC).
+  filters: a list or tuple of two integers representing number of filters in
+    1x1 convolutions.
+  pool_size: pool size of average pooling layer.
+  activation: activation function.
+  dropout: dropout parameter (drop)."""
+
+  if filters is None: 
+    filters = [960, 1280]
+
+  if pool_size is None:
+    pool_size = 8
+  
+  if len(filters) != 2:
+    raise ValueError("filters must be a list or tuple of two.")
+
+  if (not isinstance(pool_size, int) or pool_size < 1):
+    raise ValueError("pool_size be a positive integer or None.")
+  
+  if len(input_shape) != 3:
+    raise ValueError("input_shape must be a tuple of size 3.")
+
+  h, w, _ = input_shape
+  if h == w:
+    pool_size = [h, w]
+  else: 
+    pool_size = [pool_size, pool_size]
+
+  inputs = tf.keras.Input(shape=input_shape)
+  x = layers.Conv2D(kernel_size=1, strides=1, filters=filters[0],
+                    activation=activation)(inputs)
+
+  x = layers.AveragePooling2D(pool_size=pool_size, strides=1)(x)
+
+  x = layers.Conv2D(kernel_size=1, strides=1, filters=filters[1],
+                    padding='valid', activation=activation)(x)
+  outputs = layers.Dropout(dropout)(x)
+  model = tf.keras.Model(inputs, outputs, name='out_adapter')
+  return model
+
+def create_input_adapter_strided(input_shape, filters=40, kernel=4,
+                                 strides=4, activation=None):
+  """Creates an input adapter module for the input image.
+  The input adapter transforms input image of given shape
+  into a tensor of target shape.
+
+  Arguments:
+    input_shape: shape of input tensor.
+    filters: number of filters of convolution.
+    kernel: convolution kernel size.
+    strides: Stride of convolution.
+    activation: conv layer activation function."""
+
+  inputs = tf.keras.Input(shape=input_shape)
+  x = layers.Conv2D(filters=filters,
+                    kernel_size=kernel, strides=strides,
+                    activation=None)(inputs)
+  x = layers.BatchNormalization()(x)
+  outputs = layers.Activation(activation)(x)
+  model = tf.keras.Model(inputs, outputs, name='in_adapter')
   return model
