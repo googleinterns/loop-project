@@ -1,10 +1,26 @@
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
+from tensorflow.keras import regularizers
 
+def create_original_input_adapter(input_shape, depth):
+  """Creates the original ResNet input adapter.
+  
+  Arguments:
+  input_shape: input image shape.
+  depth: output tensor depth."""
+  inputs = keras.Input(shape=input_shape)
+  x = layers.Conv2D(depth, kernel_size=3, strides=1, padding='same',
+                        kernel_initializer='he_normal',
+                        kernel_regularizer=regularizers.l2(1e-4))(inputs)
+  x = layers.BatchNormalization()(x)
+  outputs = layers.Activation('relu')(x)
+  adapter = keras.Model(inputs, outputs, name='in_adapter')
+  return adapter
 
-def create_input_adapter(input_shape, size=16, depth=40, activation=None):
-  """Creates an input adapter module for the input image.
+def create_input_adapter_space2depth(input_shape, size=16, depth=40,
+                                     activation=None):
+  """Creates a space2depth input adapter module for the input image.
   The input adapter transforms input image of given shape
   into a tensor of target shape.
 
@@ -28,10 +44,33 @@ def create_input_adapter(input_shape, size=16, depth=40, activation=None):
   model = keras.Model(inputs, outputs, name='in_adapter')
   return model
 
+def create_input_adapter_strided(input_shape, filters=40, kernel=4,
+                                 strides=4, activation=None):
+  """Creates a strided input adapter module for the input image.
+  The input adapter transforms input image of given shape
+  into a tensor of target shape.
 
-def create_output_adapter(input_shape, block_size=None, pool_stride=None,
-                          activation='swish', depthwise=True, dropout=0):
-  """Creates an output adapter module that processes tensors before
+  Arguments:
+    input_shape: shape of input tensor.
+    filters: number of filters of convolution.
+    kernel: convolution kernel size.
+    strides: Stride of convolution.
+    activation: conv layer activation function."""
+
+  inputs = tf.keras.Input(shape=input_shape)
+  x = layers.Conv2D(filters=filters,
+                    kernel_size=kernel, strides=strides,
+                    activation=None)(inputs)
+  x = layers.BatchNormalization()(x)
+  outputs = layers.Activation(activation)(x)
+  model = tf.keras.Model(inputs, outputs, name='in_adapter')
+  return model
+
+
+def create_output_adapter_depthwise(
+    input_shape, block_size=None, pool_stride=None, activation='swish',
+    depthwise=True, dropout=0):
+  """Creates a depthwise output adapter module that processes tensors before
   passing them to fully connected layers.
   Arguments:
     input_shape: shape of the input tensor (HxWxC).
@@ -118,24 +157,77 @@ def create_output_adapter_isometric(input_shape, filters=None, pool_size=None,
   model = tf.keras.Model(inputs, outputs, name='out_adapter')
   return model
 
-def create_input_adapter_strided(input_shape, filters=40, kernel=4,
-                                 strides=4, activation=None):
-  """Creates an input adapter module for the input image.
-  The input adapter transforms input image of given shape
-  into a tensor of target shape.
-
+def create_output_adapter_v1(input_shape, dropout):
+  """Returns an original ResnetV1 output adapter.
+  
   Arguments:
-    input_shape: shape of input tensor.
-    filters: number of filters of convolution.
-    kernel: convolution kernel size.
-    strides: Stride of convolution.
-    activation: conv layer activation function."""
-
-  inputs = tf.keras.Input(shape=input_shape)
-  x = layers.Conv2D(filters=filters,
-                    kernel_size=kernel, strides=strides,
-                    activation=None)(inputs)
-  x = layers.BatchNormalization()(x)
-  outputs = layers.Activation(activation)(x)
-  model = tf.keras.Model(inputs, outputs, name='in_adapter')
+  input_shape: input tensor shape.
+  dropout: dropout (drop)."""
+  inputs = keras.Input(input_shape)
+  x = layers.AveragePooling2D(pool_size=8)(inputs)
+  outputs = layers.Dropout(dropout)(x)
+  model = tf.keras.Model(inputs, outputs, name='out_adapter')
   return model
+
+def create_output_adapter_v2(input_shape, dropout):
+  """Returns an original ResnetV2 output adapter.
+  
+  Arguments:
+  input_shape: input tensor shape.
+  dropout: dropout (drop)."""
+  inputs = keras.Input(input_shape)
+  x = layers.BatchNormalization()(inputs)
+  x = layers.Activation('relu')(x)
+  x = layers.AveragePooling2D(pool_size=8)(x)
+  outputs = layers.Dropout(dropout)(x)
+  model = tf.keras.Model(inputs, outputs, name='out_adapter')
+  return model
+
+
+def get_input_adapter(adapter_type, input_shape, tensor_size=16,
+                     depth=40):
+  """Returns an input adapter of given type.
+  
+  Arguments:
+  adapter_type: input adapter type: `original`, `space2depth` or `strided`.
+  input_shape: input image shape.
+  tensor_size: output tensor size.
+  depth: output tensor depth."""
+  if adapter_type == 'original':
+    return create_original_input_adapter(input_shape, depth)
+  elif adapter_type == 'space2depth':
+    return create_input_adapter_space2depth(
+            input_shape, size=tensor_size, depth=depth, activation='relu')
+  elif adapter_type == 'strided':
+    k = max(input_shape[0] // tensor_size, input_shape[0] // tensor_size)
+    return create_input_adapter_strided(input_shape, filters=depth,
+                                              kernel=k, strides=k,
+                                              activation='relu')
+  raise ValueError("Given input adapter type is not supported.")
+
+    
+def get_output_adapter(adapter_type, input_shape, dropout=0,
+                       out_filters=[128, 256]):
+  """Returns an input adapter of given type.
+  
+  Arguments:
+  adapter_type: output adapter type: `v1`, `v2`, `isometric` or `dethwise`.
+  input_shape: input tensor shape.
+  dropout: dropout (drop).
+  out_filters: list of two integers representing number of conv filters
+    in the isometric adapter."""
+  if adapter_type == 'v1':
+    return create_output_adapter_v1(input_shape, dropout)
+  elif adapter_type == 'v2':
+    return create_output_adapter_v2(input_shape, dropout)
+  elif adapter_type == 'isometric':
+    return create_output_adapter_isometric(
+            input_shape, filters=out_filters, pool_size=8, activation='relu',
+            dropout=dropout)
+  elif adapter_type == 'dethwise':
+    return create_output_adapter_depthwise(
+            input_shape, block_size=2, pool_stride=None,
+            activation='relu', depthwise=True, dropout=dropout)
+  else:
+        raise ValueError("Given output adapter type is not supported.")
+    

@@ -172,8 +172,7 @@ class WeightedBatchNormalizationTest(tf.test.TestCase):
     self.assertAllEqual(input_shape, outputs.shape)
 
   def test_output_moments(self):
-    """checks if the moments of the output tensor match to the value of mixture
-    of moments."""
+    """checks if the output moments match to the mixture of moments."""
     input_shape = (256, 16, 16, self.input_channels)
     inputs = tf.random.normal(input_shape, mean=2.5, stddev=8.0)
     bn = WeightedBatchNormalizationSeparate(num_templates=self.num_templates,

@@ -17,7 +17,7 @@ do
   for dropout in 0. 0.1 0.2 0.3 0.4 0.5; do
 	echo "Running custom block experiment with parameters:";
 	echo "tensor size = $size; aug = $aug; pixel_mean = $pixel_mean; batch size = $batch_size; num_blocks = $num_blocks; num_templates = $num_templates; dropout= $dropout; out_adapter_type = $out_adapter; conv base = $conv_base; label smoothing = $label_smoothing; kernel_reg = $kernel_reg; lr = $lr";
-	CUDA_VISIBLE_DEVICES="1" python shared_resnet_exp.py --size $size --aug_mode $aug_mode --batch_size $batch_size --num_blocks $num_blocks --num_templates $num_templates --dropout $dropout --out_adapter_type $out_adapter --in_adapter_type $in_adapter --lsmooth $label_smoothing --kernel_reg $kernel_reg --lr $lr;
+	CUDA_VISIBLE_DEVICES="1" python resnet_exp.py --size $size --aug_mode $aug_mode --batch_size $batch_size --num_blocks $num_blocks --num_templates $num_templates --dropout $dropout --out_adapter_type $out_adapter --in_adapter_type $in_adapter --lsmooth $label_smoothing --kernel_reg $kernel_reg --lr $lr --shared 1;
   done;
 echo "";
 done

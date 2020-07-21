@@ -87,7 +87,7 @@ class ResBlockTemplate():
   def get_bn3_template(self):
     """returns the first batch normalization template."""
     if self.bn_3_template is None:
-      return 'zeros', 'ones', 'zeros', 'ones'
+      return 'zeros', 'ones'
     gamma_init = tf.constant_initializer(self.bn_3_template[0])
     beta_init = tf.constant_initializer(self.bn_3_template[1])
     return gamma_init, beta_init
@@ -183,14 +183,14 @@ class WeightedResBlock(tf.keras.Model):
       """
 
   def __init__(self, kernel_size=3, expansion_factor=6, activation='relu',
-               num_templates=10, template=None, kernel_reg=1e-5):
-    super(WeightedResBlock, self).__init__(name='')
+               num_templates=10, template=None, kernel_reg=1e-5, **kwargs):
+    super(WeightedResBlock, self).__init__(**kwargs)
     if expansion_factor < 1:
       raise ValueError('The expansion factor value should be '
                        'greater than or equal to one.')
 
     self.expansion_factor = expansion_factor
-    self.activation = self.set_activation_fn(activation)
+    self.activation = self.map_activation_fn(activation)
     self.kernel_size = kernel_size
     self.template = ResBlockTemplate() if template is None else template
     self.num_templates = num_templates
@@ -198,7 +198,7 @@ class WeightedResBlock(tf.keras.Model):
 
   def build(self, input_shape):
     input_channel = input_shape[0][-1]
-    self.expanded_channel = input_channel*self.expansion_factor
+    self.expanded_channel = input_channel * self.expansion_factor
 
     kernel_init, bias_init = self.template.get_expansion_template()
     self.conv1 = wl.WeightedConv2D(
@@ -209,29 +209,26 @@ class WeightedResBlock(tf.keras.Model):
         bias_initializer=bias_init)
     self.conv1.build(input_shape)
 
-    gamma, beta, mean, var = self.template.get_bn1_template()
+    gamma, beta = self.template.get_bn1_template()
     self.bn1 = wl.WeightedBatchNormalizationSeparate(
         num_templates=self.num_templates, gamma_initializer=gamma,
-        beta_initializer=beta, moving_mean_initializer=mean,
-        moving_variance_initializer=var)
+        beta_initializer=beta)
 
     depthwise_kernel_init, bias_init = self.template.get_depthwise_template()
     self.conv2 = wl.WeightedDepthwiseConv2D(
         kernel_size=self.kernel_size, strides=(1, 1), padding='same',
         num_templates=self.num_templates,
         depthwise_initializer=depthwise_kernel_init,
-        #depthwise_regularizer=regularizers.l2(1e-4),
         bias_initializer=bias_init)
 
     cov2_in_shape = ((input_shape[0][0], input_shape[0][1], input_shape[0][2],
                       self.expanded_channel), (self.num_templates,))
     self.conv2.build(cov2_in_shape)
 
-    gamma, beta, mean, var = self.template.get_bn2_template()
+    gamma, beta = self.template.get_bn2_template()
     self.bn2 = wl.WeightedBatchNormalizationSeparate(
         num_templates=self.num_templates, gamma_initializer=gamma,
-        beta_initializer=beta, moving_mean_initializer=mean,
-        moving_variance_initializer=var)
+        beta_initializer=beta)
 
     kernel_init, bias_init = self.template.get_projection_template()
     self.conv3 = wl.WeightedConv2D(
@@ -242,11 +239,10 @@ class WeightedResBlock(tf.keras.Model):
         bias_initializer=bias_init)
     self.conv3.build(cov2_in_shape)
 
-    gamma, beta, mean, var = self.template.get_bn3_template()
+    gamma, beta = self.template.get_bn3_template()
     self.bn3 = wl.WeightedBatchNormalizationSeparate(
         num_templates=self.num_templates, gamma_initializer=gamma,
-        beta_initializer=beta, moving_mean_initializer=mean,
-        moving_variance_initializer=var)
+        beta_initializer=beta)
 
     self.built = True
 
@@ -265,7 +261,8 @@ class WeightedResBlock(tf.keras.Model):
     x += layer_input
     return x
 
-  def set_activation_fn(self, activation):
+  def map_activation_fn(self, activation):
+    """Maps activation function name to function."""
     switcher = {'relu': tf.nn.relu,
                 'relu6': tf.nn.relu6,
                 'lrelu': tf.nn.leaky_relu,
@@ -293,8 +290,9 @@ class MixtureWeight(tf.keras.layers.Layer):
     (see `keras.constraints`)
   dtype: type of variable."""
   def __init__(self, num_templates=10, initializer='glorot_uniform',
-               regularizer=None, constraint=None, dtype=tf.float32):
-    super(MixtureWeight, self).__init__(name='')
+               regularizer=None, constraint=None, dtype=tf.float32,
+              **kwargs):
+    super(MixtureWeight, self).__init__(**kwargs)
     self.num_templates = num_templates
     self.initializer = initializer
     self.regularizer = regularizer
@@ -304,7 +302,7 @@ class MixtureWeight(tf.keras.layers.Layer):
   def build(self, input_shape):
     self.mixture_weights = self.add_weight(
         name='mixture_weight',
-        shape=(self.num_templates,),
+        shape=(1, self.num_templates),
         initializer=self.initializer,
         regularizer=self.regularizer,
         constraint=self.constraint,
