@@ -34,7 +34,6 @@ def get_usps_tf_dataset(path):
   path: path to h5 file."""
 
   x_train, y_train, x_test, y_test = hdf5(path)
-  print(x_train.shape, y_train.shape)
   x_train, y_train = tf.constant(x_train), tf.constant(y_train)
   x_test, y_test = tf.constant(x_test), tf.constant(y_test)
 
@@ -114,11 +113,11 @@ def get_office_datasets(data_path, split=0.2):
     datasets_dict[domain] = (train_ds, test_ds, classes)
   return datasets_dict
 
-def get_visda_dataset(data_path, split=0.2):
-  """Returns a dictionary of VisDA datasets.
+def get_domain_net_datasets(data_path, split=0.2):
+  """Returns a dictionary of DomainNet datasets.
 
   Arguments:
-  data_path: path to the VisDA dataset folder.
+  data_path: path to the DomainNet dataset folder.
   split: test split."""
   domains = [f for f in os.listdir(data_path)
              if op.isdir(op.join(data_path, f))]
@@ -233,8 +232,8 @@ def get_da_datasets(name, image_size, data_dir, split=0.2, augment=False):
 
   if "office" in name:
     datasets_dict = get_office_datasets(os.path.join(data_dir, "office"), split)
-  elif "visda" in name:
-    datasets_dict = get_visda_dataset(os.path.join(data_dir, "visda"), split)
+  elif "domain_net" in name:
+    datasets_dict = get_domain_net_datasets(os.path.join(data_dir, "domain_net"), split)
   else:
     raise ValueError("Given dataset type is not supported")
 
