@@ -40,12 +40,14 @@ def get_lr_schedule(initial_lrate, num_epochs, end_lr_coefficient=0.95):
   the following formula:
     lr_k = initial_lrate(1 - k * end_lr_coefficient / num_epochs),
     where k is the number of epoch.
+
   Arguments:
   initial_lrate: initial learning rate.
   num_epochs: number of epochs.
   end_lr_coefficient: the learning rate at the final epoch will be
-    equal to initial_lrate * (1 - end_lr_coefficient)"""
-  decay = end_lr_coefficient / (1.0 * num_epochs)
+    equal to initial_lrate * (1 - end_lr_coefficient).
+  """
+  decay = end_lr_coefficient / (float(num_epochs))
   def lr_schedule(epoch):
     return initial_lrate * (1 - epoch * decay)
 

@@ -16,22 +16,23 @@ def hdf5(path, data_key="data", target_key="target"):
       - each group should have 'data' and 'target' dataset or spcify the key
       - flatten means to flatten images N * (C * H * W) as N * D array
   """
+  outputs = []
   with h5py.File(path, "r") as hf:
-    train = hf.get("train")
-    x_tr = train.get(data_key)[:]
-    y_tr = train.get(target_key)[:]
-    test = hf.get("test")
-    x_te = test.get(data_key)[:]
-    y_te = test.get(target_key)[:]
-    x_tr = x_tr.reshape((x_tr.shape[0], 16, 16, 1))*255.
-    x_te = x_te.reshape((x_te.shape[0], 16, 16, 1))*255.
-  return x_tr, y_tr, x_te, y_te
+    for ds in ["train", "test"]:
+      split = hf.get(ds)
+      x = train.get(data_key)[:]
+      y = train.get(target_key)[:]
+      x = x.reshape((x.shape[0], 16, 16, 1))*255.
+      outputs.extend(x, y)
+    
+  return tuple(outputs)
 
 def get_usps_tf_dataset(path):
   """returns tf.data.Dataset object with USPS dataset.
 
   Arguments:
-  path: path to h5 file."""
+  path: path to h5 file.
+  """
 
   x_train, y_train, x_test, y_test = hdf5(path)
   x_train, y_train = tf.constant(x_train), tf.constant(y_train)
@@ -57,7 +58,6 @@ def get_split_dataset(name, data_dir, split=0.8):
                              as_supervised=True,
                              split=split_arg)
 
-
   return datasets, info
 
 def get_dataset_from_directory(dir_path, split):
@@ -68,7 +68,7 @@ def get_dataset_from_directory(dir_path, split):
   split: test split."""
   def get_label(file_path):
     # convert the path to a list of path components
-    parts = tf.strings.split(file_path, os.path.sep)
+    parts = tf.strings.split(file_path, op.sep)
     # The second to last is the class-directory
     one_hot = tf.cast(parts[-2] == classes, tf.float32)
     # Integer encode the label
@@ -231,9 +231,9 @@ def get_da_datasets(name, image_size, data_dir, split=0.2, augment=False):
   split: validation split."""
 
   if "office" in name:
-    datasets_dict = get_office_datasets(os.path.join(data_dir, "office"), split)
+    datasets_dict = get_office_datasets(op.join(data_dir, "office"), split)
   elif "domain_net" in name:
-    datasets_dict = get_domain_net_datasets(os.path.join(data_dir, "domain_net"), split)
+    datasets_dict = get_domain_net_datasets(op.join(data_dir, "domain_net"), split)
   else:
     raise ValueError("Given dataset type is not supported")
 
