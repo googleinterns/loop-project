@@ -35,8 +35,8 @@ def main():
 
   if "office" in args.dataset_type:
     ds_list = ["amazon", "dslr", "webcam"]
-  elif "visda" in args.dataset_type:
-    ds_list = ["clipart", "infograph", "painting", "real", "sketch"]
+  elif "domain_net" in args.dataset_type:
+    ds_list = ["clipart", "infograph", "painting", "real", "quickdraw", "sketch"]
   else:
     ds_list = mt.get_dataset_list(args.dataset_type)
 
