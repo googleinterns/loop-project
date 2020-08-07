@@ -20,11 +20,11 @@ def hdf5(path, data_key="data", target_key="target"):
   with h5py.File(path, "r") as hf:
     for ds in ["train", "test"]:
       split = hf.get(ds)
-      x = train.get(data_key)[:]
-      y = train.get(target_key)[:]
+      x = split.get(data_key)[:]
+      y = split.get(target_key)[:]
       x = x.reshape((x.shape[0], 16, 16, 1))*255.
-      outputs.extend(x, y)
-    
+      outputs.extend([x, y])
+
   return tuple(outputs)
 
 def get_usps_tf_dataset(path):
@@ -33,7 +33,6 @@ def get_usps_tf_dataset(path):
   Arguments:
   path: path to h5 file.
   """
-
   x_train, y_train, x_test, y_test = hdf5(path)
   x_train, y_train = tf.constant(x_train), tf.constant(y_train)
   x_test, y_test = tf.constant(x_test), tf.constant(y_test)
@@ -88,13 +87,16 @@ def get_dataset_from_directory(dir_path, split):
   classes = np.array(classes)
   img_files = glob.glob(op.join(dir_path, "*/*"))
   list_ds = tf.data.Dataset.list_files(img_files, shuffle=False)
-  labeled_ds = list_ds.map(process_path)
   num_files = len(img_files)
   num_test_files = int(num_files * split)
-  labeled_ds = labeled_ds.shuffle(num_files, seed=123,
-                                  reshuffle_each_iteration=False)
-  train_ds = labeled_ds.skip(num_test_files)
-  test_ds = labeled_ds.take(num_test_files)
+  print(num_files, num_test_files)
+  list_ds = list_ds.shuffle(num_files, seed=17,
+                            reshuffle_each_iteration=False)
+  # labeled_ds = list_ds.map(process_path)
+  train_ds = (list_ds.skip(num_test_files)).map(
+      process_path, num_parallel_calls=tf.data.experimental.AUTOTUNE)
+  test_ds = (list_ds.take(num_test_files)).map(
+      process_path, num_parallel_calls=tf.data.experimental.AUTOTUNE)
   return train_ds, test_ds, classes
 
 def get_office_datasets(data_path, split=0.2):
@@ -168,12 +170,17 @@ def preprocess_dataset(dataset, image_size, num_classes, augment=False,
   if isinstance(image_size, int):
     image_size = (image_size, image_size)
 
-  dataset = dataset.map(preprocess)
+  dataset = dataset.map(
+      preprocess, num_parallel_calls=tf.data.experimental.AUTOTUNE)
   if repeat:
     dataset = dataset.repeat()
   if augment:
-    dataset = dataset.map(augment_fn)
-  ds_x, ds_y = dataset.map(take_x), dataset.map(take_y)
+    dataset = dataset.map(
+        augment_fn, num_parallel_calls=tf.data.experimental.AUTOTUNE)
+  ds_x = dataset.map(take_x,
+                     num_parallel_calls=tf.data.experimental.AUTOTUNE)
+  ds_y = dataset.map(take_y,
+                     num_parallel_calls=tf.data.experimental.AUTOTUNE)
   return  ds_x, ds_y
 
 
@@ -233,17 +240,16 @@ def get_da_datasets(name, image_size, data_dir, split=0.2, augment=False):
   if "office" in name:
     datasets_dict = get_office_datasets(op.join(data_dir, "office"), split)
   elif "domain_net" in name:
-    datasets_dict = get_domain_net_datasets(op.join(data_dir, "domain_net"), split)
+    datasets_dict = get_domain_net_datasets(op.join(data_dir, name), split)
   else:
     raise ValueError("Given dataset type is not supported")
 
   domains = {}
   domain_info = {}
-  print(datasets_dict.keys())
+
   for domain in datasets_dict:
     train_ds, test_ds, classes = datasets_dict[domain]
     num_classes = len(classes)
-
     train_x, train_y = preprocess_dataset(train_ds, image_size, num_classes,
                                           augment, repeat=True)
     test_x, test_y = preprocess_dataset(test_ds, image_size, num_classes,
