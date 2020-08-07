@@ -1,3 +1,5 @@
+""" Main code for multitask and domain adaptation experiments.
+"""
 
 import tensorflow as tf
 import tensorflow.keras as tkf
@@ -5,6 +7,39 @@ import lib.weighted_resblock as wblock
 import lib.shared_resnet as sresnet
 import lib.custom_resnet as cresnet
 from utils import args_util, training, datasets_util
+
+# dictionary of lists of datasets
+DATASET_TYPE_DICT = {
+    "digits_da": ["mnist", "usps", "kmnist", "fashion_mnist",
+                  "mnist_corrupted/glass_blur", "svhn_cropped"],
+    "digits": ["mnist_corrupted/shot_noise",
+               "mnist_corrupted/impulse_noise",
+               "mnist_corrupted/glass_blur", "mnist_corrupted/shear",
+               "mnist_corrupted/scale", "mnist_corrupted/fog",
+               "mnist_corrupted/spatter",
+               "mnist_corrupted/canny_edges",
+               "mnist", "usps", "svhn_cropped"],
+    "characters": ["kmnist", "emnist", "omniglot",
+                   "quickdraw_bitmap", "cmaterdb"],
+    "small_natural": ["cifar100", "imagenette",
+                      "cifar10_corrupted/zoom_blur_1",
+                      "cifar10_corrupted/shot_noise_2",
+                      "cifar10_corrupted/fog_3",
+                      "cifar10_corrupted/gaussian_blur_2",
+                      "cifar10_corrupted/zoom_blur_5",
+                      "cifar10"],
+    "natural": ["imagenette", "caltech101", "imagenet2012",
+                "oxford_iiit_pet", "pet_finder"],
+    "mix": ["cifar100", "quickdraw_bitmap", "mnist",
+            "imagewang", "imagenette", "usps",
+            "svhn_cropped", "kmnist", "cifar10"],
+    "mix_2": ["cifar100", "mnist", "imagenette",
+              "usps", "svhn_cropped", "kmnist"],
+    "office": "office",
+    "domain_net": "domain_net",
+    "domain_net_small": "domain_net_small",
+    "domain_net_tiny": "domain_net_tiny"}
+
 
 def get_custom_parser():
   """returns a customized arguments parser."""
@@ -18,9 +53,7 @@ def get_custom_parser():
                       default="svhn_cropped",
                       help="number of datasets in pretraining phase.")
   parser.add_argument("--dataset_type",
-                      choices=["digits_da", "digits",
-                               "characters", "small_natural", "natural",
-                               "mix", "mix_2", "office", "domain_net"],
+                      choices=list(DATASET_TYPE_DICT.keys()),
                       default="digits",
                       help="dataset type (default is digits)")
   parser.add_argument("--share_mixture",
@@ -44,7 +77,7 @@ def get_custom_parser():
   return parser
 
 def get_losses(datasets, num_train_ds, label_smoothing=0):
-  """Returens dictionaries of losses and loss weights for the datasets.
+  """Returns dictionaries of losses and loss weights for the datasets.
 
   Arguments:
   datasets: list of dataset names.
@@ -59,48 +92,6 @@ def get_losses(datasets, num_train_ds, label_smoothing=0):
     loss_weights[loss_name] = float(i < num_train_ds)
     losses[loss_name] = cce
   return losses, loss_weights
-
-def get_dataset_list(dataset_type, num_datasets=None):
-  """Maps the dataset type with the list of dataset names.
-
-  Arguments:
-  dataset_type: datasets type.
-  num_datasets: optional number of datasets to use.
-  """
-  switcher = {
-      "digits_da": ["mnist", "usps", "kmnist", "fashion_mnist",
-                    "mnist_corrupted/glass_blur", "svhn_cropped"],
-      "digits": ["mnist_corrupted/shot_noise",
-                 "mnist_corrupted/impulse_noise",
-                 "mnist_corrupted/glass_blur", "mnist_corrupted/shear",
-                 "mnist_corrupted/scale", "mnist_corrupted/fog",
-                 "mnist_corrupted/spatter",
-                 "mnist_corrupted/canny_edges",
-                 "mnist", "usps", "svhn_cropped"],
-      "characters": ["kmnist", "emnist", "omniglot",
-                     "quickdraw_bitmap", "cmaterdb"],
-      "small_natural": ["cifar100", "imagenette",
-                        "cifar10_corrupted/zoom_blur_1",
-                        "cifar10_corrupted/shot_noise_2",
-                        "cifar10_corrupted/fog_3",
-                        "cifar10_corrupted/gaussian_blur_2",
-                        "cifar10_corrupted/zoom_blur_5",
-                        "cifar10"],
-      "natural": ["imagenette", "caltech101", "imagenet2012",
-                  "oxford_iiit_pet", "pet_finder"],
-      "mix": ["cifar100", "quickdraw_bitmap", "mnist",
-              "imagewang", "imagenette", "usps",
-              "svhn_cropped", "kmnist", "cifar10"],
-      "mix_2": ["cifar10", "mnist", "imagenette",
-                "usps", "svhn_cropped", "kmnist"],
-      "office": "office",
-      "domain_net": "domain_net"}
-  ds_list = switcher.get(dataset_type)
-  if ds_list is None:
-    raise ValueError("Given dataset type is not supported.")
-  if num_datasets is None:
-    return ds_list
-  return ds_list[:num_datasets]
 
 
 def get_pretrain_datasets(datasets, image_size, data_dir, augment):
@@ -236,48 +227,49 @@ def build_mixture_models(feature_extractor, datasets, input_shape,
   return combined_model
 
 def get_combined_model(
-    datasets_info, input_shape, num_layers=16, num_templates=4,
-    tensor_size=16, in_adapter="strided", out_adapter="isometric",
-    dropout=0, kernel_reg=0, shared=False, share_mixture=False,
-    share_logits=False):
+    datasets_info, input_shape, shared=False, share_mixture=False,
+    share_logits=False, num_layers=16, num_templates=4,
+    **kwargs):
+    # tensor_size=16, in_adapter="strided", out_adapter="isometric",
+    # dropout=0, kernel_reg=0):
   """Returns the multitask training model.
 
   Arguments:
   datasets_info: dataset info dictionary.
   input_shape: shape of the input image.
-  num_layers: number of residual blocks in the feature extractor.
-  num_templates: number of templates.
-  tensor_size: size of the resblock input tensor.
-  in_adapter: input adapter type.
-  out_adapter: output adapter type.
-  dropout: dropout.
-  kernel_reg: kernel regularization parameter.
   shared: if True, the shared model will be created.
   share_mixture: if True, the mixture weights will be shared across
   domains.
   share_logits: if True, the logits layer will be shared.
+  num_layers: number of residual blocks in the feature extractor.
+  num_templates: number of templates.
+
+  Feature extractor arguments such as:
+  tensor_size: size of the resblock input tensor.
+  in_adapter: input adapter type.
+  out_adapter: output adapter type.
+  dropout: dropout.
+  kernel_regularizer: kernel regularization parameter.
   """
   if not shared:
     feature_extractor = cresnet.resnet(
         input_shape=input_shape, num_layers=num_layers,
-        num_classes=10, tensor_size=tensor_size, in_adapter=in_adapter,
-        out_adapter=out_adapter, kernel_regularizer=kernel_reg,
-        dropout=dropout, with_head=False, name="feature_extractor")
+        num_classes=10, name="feature_extractor", with_head=False,
+        out_filters=[256, 512],
+        **kwargs)
     combined_model = build_models(
         feature_extractor=feature_extractor, datasets=datasets_info,
         input_shape=input_shape)
   else:
     feature_extractor = sresnet.shared_resnet(
         input_shape=input_shape, num_layers=num_layers,
-        num_templates=num_templates, num_classes=10, tensor_size=tensor_size,
-        in_adapter=in_adapter, out_adapter=out_adapter,
-        kernel_regularizer=kernel_reg, dropout=dropout,
+        num_templates=num_templates, num_classes=10, 
         with_head=False, mixture_weights_as_input=True,
-        name="feature_extractor")
+        name="feature_extractor", out_filters=[256, 512], **kwargs)
     combined_model = build_mixture_models(
         feature_extractor=feature_extractor, datasets=datasets_info,
         input_shape=input_shape, num_layers=num_layers,
-        num_templates=num_templates,
+        num_templates=num_templates, 
         use_shared_mixture_weights=share_mixture, share_logits=share_logits)
   return combined_model
 
@@ -319,7 +311,9 @@ def pretrain(new_shape, data_dir, save_path, shared=False, share_mixture=False,
     checkpoint.
   """
   h, w, _ = new_shape
-  ds_list = get_dataset_list(dataset_type)
+  ds_list = DATASET_TYPE_DICT[dataset_type]
+  if ds_list is None:
+    raise ValueError("Given dataset type is not supported")
 
   # acquiring the combined datasets
   dataset_dict, datasets_info = get_pretrain_datasets(
@@ -327,16 +321,16 @@ def pretrain(new_shape, data_dir, save_path, shared=False, share_mixture=False,
   ds_list = list(dataset_dict.keys())
   print("Training the model on datasets: ", ds_list)
   comb_dataset_train, comb_dataset_test = get_combined_datasets(dataset_dict)
-  comb_dataset_train = (comb_dataset_train.shuffle(buffer_size=1000)
+  comb_dataset_train = (comb_dataset_train.shuffle(buffer_size=100)
                         .batch(batch_size, drop_remainder=True))
-  comb_dataset_test = (comb_dataset_test.shuffle(buffer_size=1000)
+  comb_dataset_test = (comb_dataset_test.shuffle(buffer_size=100)
                        .batch(batch_size, drop_remainder=True))
   # creating the multitask model
   combined_model = get_combined_model(
       datasets_info, new_shape, num_layers=num_layers,
       num_templates=num_templates, tensor_size=tensor_size,
       in_adapter=in_adapter, out_adapter=out_adapter,
-      dropout=dropout, kernel_reg=kernel_reg,
+      dropout=dropout, kernel_regularizer=kernel_reg,
       shared=shared, share_mixture=share_mixture, share_logits=share_logits)
 
   lr_schedule = training.get_lr_schedule(lr, num_epochs)
@@ -388,9 +382,9 @@ def train_model(model, train_data, test_data, callbacks, optimizer,
 
   # training the model
   if num_epochs > 0:
-    model.fit(train_data.prefetch(5),
+    model.fit(train_data.prefetch(tf.data.experimental.AUTOTUNE),
               verbose=1, batch_size=batch_size, epochs=num_epochs,
-              teps_per_epoch=num_steps, validation_data=test_data,
+              steps_per_epoch=num_steps, validation_data=test_data,
               callbacks=callbacks)
   return model
 
