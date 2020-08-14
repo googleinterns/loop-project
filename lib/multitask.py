@@ -1,6 +1,6 @@
 """ Main code for multitask and domain adaptation experiments.
 """
-
+import os
 import tensorflow as tf
 import tensorflow.keras as tkf
 import lib.weighted_resblock as wblock
@@ -10,24 +10,28 @@ from utils import args_util, training, datasets_util
 
 # dictionary of lists of datasets
 DATASET_TYPE_DICT = {
-    "digits_da": ["mnist", "usps", "kmnist", "fashion_mnist",
-                  "mnist_corrupted/glass_blur", "svhn_cropped"],
-    "digits": ["mnist_corrupted/shot_noise",
-               "mnist_corrupted/impulse_noise",
-               "mnist_corrupted/glass_blur", "mnist_corrupted/shear",
-               "mnist_corrupted/scale", "mnist_corrupted/fog",
-               "mnist_corrupted/spatter",
-               "mnist_corrupted/canny_edges",
+    "digits_da": ["mnist", "mnist_corrupted/scale",
+                  "mnist_corrupted/glass_blur", "usps", "svhn_cropped"],
+    "digits": ["mnist_corrupted/scale",
+               "mnist_corrupted/shot_noise",
+              #  "mnist_corrupted/impulse_noise",
+              #  "mnist_corrupted/glass_blur", "mnist_corrupted/shear",
+              #  "mnist_corrupted/fog",
+              #  "mnist_corrupted/spatter",
+              #  "mnist_corrupted/canny_edges",
                "mnist", "usps", "svhn_cropped"],
     "characters": ["kmnist", "emnist", "omniglot",
                    "quickdraw_bitmap", "cmaterdb"],
     "small_natural": ["cifar100", "imagenette",
-                      "cifar10_corrupted/zoom_blur_1",
-                      "cifar10_corrupted/shot_noise_2",
-                      "cifar10_corrupted/fog_3",
-                      "cifar10_corrupted/gaussian_blur_2",
-                      "cifar10_corrupted/zoom_blur_5",
+                      # "cifar10_corrupted/zoom_blur_1",
+                      # "cifar10_corrupted/shot_noise_2",
                       "cifar10"],
+    "cifar10": ["cifar10_corrupted/zoom_blur_1",
+                "cifar10_corrupted/shot_noise_2",
+                "cifar10_corrupted/fog_3",
+                "cifar10_corrupted/gaussian_blur_2",
+                "cifar10_corrupted/zoom_blur_5",
+                "cifar10"],
     "natural": ["imagenette", "caltech101", "imagenet2012",
                 "oxford_iiit_pet", "pet_finder"],
     "mix": ["cifar100", "quickdraw_bitmap", "mnist",
@@ -38,7 +42,8 @@ DATASET_TYPE_DICT = {
     "office": "office",
     "domain_net": "domain_net",
     "domain_net_small": "domain_net_small",
-    "domain_net_tiny": "domain_net_tiny"}
+    "domain_net_tiny": "domain_net_tiny",
+    "domain_net_subset": "domain_net_subset"}
 
 
 def get_custom_parser():
@@ -47,10 +52,6 @@ def get_custom_parser():
   parser.add_argument("--num_datasets",
                       type=int,
                       default=1,
-                      help="number of datasets in pretraining phase.")
-  parser.add_argument("--target_dataset",
-                      type=str,
-                      default="svhn_cropped",
                       help="number of datasets in pretraining phase.")
   parser.add_argument("--dataset_type",
                       choices=list(DATASET_TYPE_DICT.keys()),
@@ -64,12 +65,16 @@ def get_custom_parser():
                       type=int,
                       default=0,
                       help="if > 0, the last layer is shared across datasets.")
+  parser.add_argument("--copy_weights",
+                      type=int,
+                      default=0,
+                      help="if > 0, mixture weights and head will be shared to target.")
   parser.add_argument("--num_epochs_finetune",
                       type=int,
                       default=10,
                       help="number of epochs to finetune the model.")
   parser.add_argument("--finetune_mode",
-                      choices=["h", "m", "b", "hm", "hb", "hbm", "all"],
+                      choices=["h", "m", "b", "bm", "hm", "hb", "hbm", "all"],
                       default="h",
                       help="finetuning mode "
                       "(h = head, m = mixture weights,"
@@ -140,7 +145,8 @@ def get_combined_datasets(datasets_dict):
   return combined_dataset_train, combined_dataset_test
 
 
-def build_models(feature_extractor, datasets, input_shape):
+def build_models(feature_extractor, datasets, input_shape,
+                 share_logits=False):
   """Returns combined models for the given datasets.
 
   Creates a tf.keras.Model that has separate inputs and top layers for all
@@ -150,7 +156,11 @@ def build_models(feature_extractor, datasets, input_shape):
   feature_extractor: common feature extractor without head.
   datasets: dataset dict (from `get_datasets` method).
   input_shape: model input shape.
+  share_logits: If True, single logits layer will be shared across datasets,
+  otherwise separate logits layers will be created for each dataset.
   """
+  def rename(inputs, name):
+    return tkf.layers.Lambda(lambda x: x, name=name)(inputs)
 
   num_classes = [datasets[x]["num_classes"] for x in datasets]
   ds_names = list(datasets.keys())
@@ -159,9 +169,15 @@ def build_models(feature_extractor, datasets, input_shape):
   inputs = [tkf.Input(name="%s_in" % x, shape=input_shape)
             for x in ds_names]
   features = [feature_extractor(x) for x in inputs]
-  outputs = [tkf.layers.Dense(num_classes[i], activation="softmax",
-                              name="%s_out" % ds_names[i])(features[i])
-             for i in range(num_datasets)]
+  if share_logits:
+    out_layer = tkf.layers.Dense(num_classes[0], activation="softmax",
+                            name="shared_out")
+    outputs = [rename(out_layer(features[i]), "%s_out" % ds_names[i])
+               for i in range(num_datasets)]
+  else:
+    outputs = [tkf.layers.Dense(num_classes[i], activation="softmax",
+                                name="%s_out" % ds_names[i])(features[i])
+              for i in range(num_datasets)]
   combined_model = tkf.Model(inputs, outputs, name="combined")
   return combined_model
 
@@ -228,7 +244,7 @@ def build_mixture_models(feature_extractor, datasets, input_shape,
 
 def get_combined_model(
     datasets_info, input_shape, shared=False, share_mixture=False,
-    share_logits=False, num_layers=16, num_templates=4,
+    share_logits=False, separate_bn=False, num_layers=16, num_templates=4,
     **kwargs):
     # tensor_size=16, in_adapter="strided", out_adapter="isometric",
     # dropout=0, kernel_reg=0):
@@ -251,21 +267,22 @@ def get_combined_model(
   dropout: dropout.
   kernel_regularizer: kernel regularization parameter.
   """
+  
   if not shared:
     feature_extractor = cresnet.resnet(
         input_shape=input_shape, num_layers=num_layers,
         num_classes=10, name="feature_extractor", with_head=False,
-        out_filters=[256, 512],
         **kwargs)
     combined_model = build_models(
         feature_extractor=feature_extractor, datasets=datasets_info,
-        input_shape=input_shape)
+        input_shape=input_shape, share_logits=share_logits)
   else:
     feature_extractor = sresnet.shared_resnet(
         input_shape=input_shape, num_layers=num_layers,
         num_templates=num_templates, num_classes=10, 
         with_head=False, mixture_weights_as_input=True,
-        name="feature_extractor", out_filters=[256, 512], **kwargs)
+        name="feature_extractor",
+        separate_bn=separate_bn, **kwargs)
     combined_model = build_mixture_models(
         feature_extractor=feature_extractor, datasets=datasets_info,
         input_shape=input_shape, num_layers=num_layers,
@@ -275,11 +292,12 @@ def get_combined_model(
 
 
 def pretrain(new_shape, data_dir, save_path, shared=False, share_mixture=False,
-             share_logits=False,
+             share_logits=False, separate_bn=False,
              dataset_type="digits", aug=False, batch_size=32, lr=2*1e-3,
              num_epochs=200, num_steps=1500, num_datasets=1,
              tensor_size=16, num_layers=16, num_templates=4,
              in_adapter="strided", out_adapter="isometric",
+             filter_base=128, depth=40,
              dropout=0, kernel_reg=0, lsmooth=0, restore_checkpoint=False,
              ckpt_path=None):
   """Returns a pretrained model with given parameters.
@@ -331,12 +349,20 @@ def pretrain(new_shape, data_dir, save_path, shared=False, share_mixture=False,
       num_templates=num_templates, tensor_size=tensor_size,
       in_adapter=in_adapter, out_adapter=out_adapter,
       dropout=dropout, kernel_regularizer=kernel_reg,
-      shared=shared, share_mixture=share_mixture, share_logits=share_logits)
+      shared=shared, share_mixture=share_mixture,
+      share_logits=share_logits, separate_bn=separate_bn,
+      out_filters=[filter_base, 2 * filter_base], depth=depth)
 
   lr_schedule = training.get_lr_schedule(lr, num_epochs)
   losses, loss_weights = get_losses(ds_list, num_datasets, lsmooth)
   print(loss_weights)
   callbacks, ckpt = training.get_callbacks(save_path, lr_schedule, "pretrained")
+  vis_path = os.path.join(save_path, "mix_vis", "pretrained")
+  vis_cbk = training.VisualizeCallback(vis_path, domains=ds_list,
+                              num_templates=num_templates,
+                              num_layers=num_layers,
+                              frequency=5)
+  callbacks.append(vis_cbk)
   if ckpt_path is None:
     ckpt_path = ckpt
 
@@ -348,6 +374,7 @@ def pretrain(new_shape, data_dir, save_path, shared=False, share_mixture=False,
       print("could not restore weights from %s" % ckpt_path)
       pass
   combined_model.summary()
+
   optimizer = tf.keras.optimizers.RMSprop(learning_rate=lr_schedule(0))
   # fitting the model
   trained_model = train_model(combined_model, comb_dataset_train,
@@ -409,6 +436,7 @@ def fix_weights(model, target_dataset, finetune_mode="h", shared=False):
     if "h" in finetune_mode:
       target_head_name = target_dataset + "_out"
       trainable_names.append(target_head_name)
+      trainable_names.append("shared_out")
     if "m" in finetune_mode:
       trainable_names.append("shared_mix")
       trainable_names.append(target_dataset + "_mix")
@@ -422,8 +450,15 @@ def fix_weights(model, target_dataset, finetune_mode="h", shared=False):
   if "b" in finetune_mode:
     if shared:
       model.get_layer("feature_extractor").trainable = True
-      resblock = (model.get_layer("feature_extractor")
-                  .get_layer("weighted_resblock"))
+      try:
+        resblock = (model.get_layer("feature_extractor")
+                    .get_layer("weighted_resblock"))
+      except ValueError:
+        sep_bn = (model.get_layer("feature_extractor")
+                    .get_layer("weighted_res_block_separate_bn"))
+        resblock = sep_bn.resblock
+        sep_bn.trainable = True
+
       resblock.trainable = True
       for layer in resblock.layers:
         if "weighted_batch_normalization" in layer.name:
@@ -445,5 +480,33 @@ def fix_weights(model, target_dataset, finetune_mode="h", shared=False):
               block_layer.trainable = False
         else:
           layer.trainable = False
+
+  return model
+
+def copy_weights(model, source, target, num_layers, shared=False):
+  """Copies the weight values of mixture weights and head from source to target
+  domain.
+
+  Arguments:
+  model: a tf.keras.Model object.
+  source: source domain name.
+  target: target domain name.
+  shared: whether the model is shared. 
+  num_layers: number of resblock layers in the model.
+  """
+  try:
+    model.get_layer("shared_out")
+  except ValueError:
+    source_out = model.get_layer("%s_out" % source)
+    target_out = model.get_layer("%s_out" % target)
+    target_out.set_weights(source_out.get_weights())
+    print("copied head weights.")
+
+  if shared:
+    for idx in range(num_layers):
+      source_mix =  model.get_layer("%s_mix_%d" % (source, idx))
+      target_mix =  model.get_layer("%s_mix_%d" % (target, idx))
+      target_mix.set_weights(source_mix.get_weights())
+      print("copied weights from %s_mix_%d to %s_mix_%d" % (source, idx, target, idx))
 
   return model

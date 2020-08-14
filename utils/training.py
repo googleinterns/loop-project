@@ -1,4 +1,5 @@
 import os
+import imageio
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras import backend as K
@@ -22,7 +23,7 @@ def get_callbacks(save_path, lr_schedule, prefix=None):
   lr_scheduler = tf.keras.callbacks.LearningRateScheduler(lr_schedule)
   tboard = tf.keras.callbacks.TensorBoard(
       log_dir=log_path, histogram_freq=0, write_graph=True, write_images=False,
-      update_freq=1500, profile_batch=10, embeddings_freq=0,
+      update_freq=1500, profile_batch="10,20", embeddings_freq=0,
       embeddings_metadata=None)
   cp_callback = tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_path,
                                                    save_weights_only=True,
@@ -53,6 +54,34 @@ def get_lr_schedule(initial_lrate, num_epochs, end_lr_coefficient=0.95):
 
   return lr_schedule
 
+def visualize_mixture_weights(model, domains, num_templates, num_layers):
+  """ Returns a matrix of mixture weights for visualization.
+
+  Arguments:
+  model: target model.
+  domains: list of domain names.
+  num_templates: number of templates in the model.
+  num_layers: number of resblock layers in the model.
+  """
+  num_domains = len(domains)
+  mix_w_matr = np.zeros((num_layers, num_domains * (num_templates + 1)))
+  domain_idx = 0
+  k = (num_templates + 1)
+  for domain in domains: 
+    mix_w_arr = np.zeros((num_layers, num_templates))
+    for i in range(num_layers):
+      mw = model.get_layer("%s_mix_%s" % (domain, i))
+      if len(mw.trainable_variables) == 0:
+        mw_weights = mw.non_trainable_variables[0]
+      else:
+        mw_weights = mw.trainable_variables[0]
+      mix_w_arr[i] = tf.nn.softmax(mw_weights, axis=1).numpy()
+    mix_w_matr[:, domain_idx * k: (domain_idx + 1) * k - 1] = mix_w_arr
+    domain_idx += 1
+
+  return mix_w_matr
+
+
 class LRTensorBoard(tf.keras.callbacks.TensorBoard):
   """Custom callbacks class for learning rate plotting in Tenforboard."""
   def __init__(self, log_dir, **kwargs):
@@ -63,4 +92,37 @@ class LRTensorBoard(tf.keras.callbacks.TensorBoard):
     logs = logs or {}
     logs.update({"lr": K.eval(self.model.optimizer.lr)})
     super().on_epoch_end(epoch, logs)
+
+class VisualizeCallback(tf.keras.callbacks.Callback):
+  """
+  Mixture weights visualization callback.
+
+  Arguments:
+  save_path: the mixture weight plots will be saved in this directory.
+    
+  """
+  def __init__(self, save_path, domains, num_templates, num_layers,
+               frequency=10, **args):
+    self.frequency = frequency
+    self.save_path = os.path.abspath(save_path)
+    self.domains = domains
+    self.num_templates = num_templates
+    self.num_layers = num_layers
+    # self.summary = tf.summary.create_file_writer(os.path.join(self.save_path,
+    #                                                           "imglog"))
+    if not os.path.exists(self.save_path):
+      os.makedirs(self.save_path)
+    super(VisualizeCallback, self).__init__(**args)
+
+
+  def on_epoch_end(self, epoch, logs=None):
+    if epoch % self.frequency == 0:
+      mw_img = visualize_mixture_weights(self.model, domains=self.domains,
+                                         num_templates=self.num_templates,
+                                         num_layers=self.num_layers) 
+      fname = os.path.join(self.save_path, "mixtures_%d.png" % epoch) 
+      imageio.imwrite(fname, mw_img)
+      # with self.summary.as_default():
+      #   tf.summary.image("Mixture weights", mw_img, step=epoch)
+      #   tf.summary.scalar("A", 1., step=epoch)
 

@@ -27,18 +27,28 @@ def main():
       num_datasets=args.num_datasets, tensor_size=args.size,
       num_layers=args.num_blocks, num_templates=args.num_templates,
       in_adapter=args.in_adapter_type, out_adapter=args.out_adapter_type,
+      filter_base=args.out_filter_base,
       dropout=args.dropout, kernel_reg=args.kernel_reg,
       restore_checkpoint=args.restore > 0, ckpt_path=args.ckpt_path,
-      lsmooth=args.lsmooth)
+      lsmooth=args.lsmooth, separate_bn=args.sep_bn > 0, depth=args.depth)
   # Evaluate trained model
   results_file = os.path.join(exp_path, "results.txt")
 
   if "office" in args.dataset_type:
     ds_list = ["amazon", "dslr", "webcam"]
+  elif "domain_net_subset" in args.dataset_type:
+    ds_list = ["painting", "real", "sketch"]
   elif "domain_net" in args.dataset_type:
     ds_list = ["clipart", "infograph", "painting", "real", "quickdraw", "sketch"]
   else:
-    ds_list = mt.get_dataset_list(args.dataset_type)
+    ds_list = mt.DATASET_TYPE_DICT[args.dataset_type]
+
+  # copying the source weights to target variables
+  if args.copy_weights > 0:
+    model = mt.copy_weights(model, source=ds_list[0],
+                            target=args.target_dataset,
+                            num_layers=args.num_blocks,
+                            shared=args.shared > 0)
 
   num_dsets = len(ds_list)
   scores = model.evaluate(test_dataset)
@@ -55,7 +65,7 @@ def main():
   # fixing model weights and training
   fixed_model = mt.fix_weights(model, target_dataset=args.target_dataset,
                                finetune_mode=args.finetune_mode,
-                               shared=args.shared)
+                               shared=args.shared > 0)
   lr_schedule = training.get_lr_schedule(args.lr*0.5, args.num_epochs_finetune,
                                          end_lr_coefficient=0.2)
   losses, loss_weights = mt.get_losses(ds_list, args.num_datasets,
@@ -65,6 +75,13 @@ def main():
   print("Loss weights:", loss_weights)
   optimizer = tf.keras.optimizers.RMSprop(learning_rate=lr_schedule(0))
   callbacks, ckpt = training.get_callbacks(exp_path, lr_schedule, "finetuned")
+  vis_path = os.path.join(exp_path, "mix_vis", "finetuned")
+  vis_cbk = training.VisualizeCallback(exp_path, domains=ds_list,
+                              num_templates=args.num_templates,
+                              num_layers=args.num_blocks,
+                              frequency=5)
+  callbacks.append(vis_cbk)
+  fixed_model.summary()
   # finetuning the model
   model = mt.train_model(fixed_model, train_dataset, test_dataset,
                          callbacks=callbacks, optimizer=optimizer,

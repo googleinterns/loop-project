@@ -105,7 +105,7 @@ def get_office_datasets(data_path, split=0.2):
   Arguments:
   data_path: path to the Office dataset folder.
   split: test split."""
-  domains = [f for f in os.listdir(data_path)
+  domains = [f for f in sorted(os.listdir(data_path))
              if op.isdir(op.join(data_path, f))]
   datasets_dict = {}
   for domain in domains:
@@ -121,7 +121,7 @@ def get_domain_net_datasets(data_path, split=0.2):
   Arguments:
   data_path: path to the DomainNet dataset folder.
   split: test split."""
-  domains = [f for f in os.listdir(data_path)
+  domains = [f for f in sorted(os.listdir(data_path))
              if op.isdir(op.join(data_path, f))]
   datasets_dict = {}
   for domain in domains:
