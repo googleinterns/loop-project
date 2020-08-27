@@ -10,21 +10,19 @@ from utils import args_util, training, datasets_util
 
 # dictionary of lists of datasets
 DATASET_TYPE_DICT = {
+    "digits_uda": ["mnist", "mnist_corrupted/shot_noise",
+                   "mnist_corrupted/shear",
+                   "mnist_corrupted/scale",
+                   "svhn_cropped",
+                   "usps"],
     "digits_da": ["mnist", "mnist_corrupted/scale",
                   "mnist_corrupted/glass_blur", "usps", "svhn_cropped"],
-    "digits": ["mnist_corrupted/scale",
-               "mnist_corrupted/shot_noise",
-              #  "mnist_corrupted/impulse_noise",
-              #  "mnist_corrupted/glass_blur", "mnist_corrupted/shear",
-              #  "mnist_corrupted/fog",
-              #  "mnist_corrupted/spatter",
-              #  "mnist_corrupted/canny_edges",
-               "mnist", "usps", "svhn_cropped"],
+    "digits": ["mnist_corrupted/glass_blur",
+               "mnist_corrupted/scale",
+               "usps"],
     "characters": ["kmnist", "emnist", "omniglot",
                    "quickdraw_bitmap", "cmaterdb"],
     "small_natural": ["cifar100", "imagenette",
-                      # "cifar10_corrupted/zoom_blur_1",
-                      # "cifar10_corrupted/shot_noise_2",
                       "cifar10"],
     "cifar10": ["cifar10_corrupted/zoom_blur_1",
                 "cifar10_corrupted/shot_noise_2",
@@ -43,7 +41,8 @@ DATASET_TYPE_DICT = {
     "domain_net": "domain_net",
     "domain_net_small": "domain_net_small",
     "domain_net_tiny": "domain_net_tiny",
-    "domain_net_subset": "domain_net_subset"}
+    "domain_net_subset": "domain_net_subset",
+    "domain_net_subset_augmented": "domain_net_subset_augmented"}
 
 
 def get_custom_parser():
@@ -68,7 +67,8 @@ def get_custom_parser():
   parser.add_argument("--copy_weights",
                       type=int,
                       default=0,
-                      help="if > 0, mixture weights and head will be shared to target.")
+                      help="if > 0, mixture weights and"
+                           "head will be shared to target.")
   parser.add_argument("--num_epochs_finetune",
                       type=int,
                       default=10,
@@ -80,6 +80,21 @@ def get_custom_parser():
                       "(h = head, m = mixture weights,"
                       "b = batch norm, all = entire model.)")
   return parser
+
+def write_scores(datasets, scores, fpath, f_mode="w+",
+                 scores_name="Pretraining"):
+  """Writes the evaluation scores to the file.
+  """
+  num_dsets = len(datasets)
+  fl = open(fpath, f_mode)
+  fl.write("%s results\n" % scores_name)
+  for i in range(num_dsets):
+    print("Test loss on %s: %f" % (datasets[i], scores[i + 1]))
+    print("Test accuracy on %s: %f" % (datasets[i], scores[num_dsets + i + 1]))
+    fl.write("Test loss on %s: %f\n" % (datasets[i], scores[i + 1]))
+    fl.write("Test accuracy on %s: %f\n\n" %
+             (datasets[i], scores[num_dsets + i + 1]))
+  fl.close()
 
 def get_losses(datasets, num_train_ds, label_smoothing=0):
   """Returns dictionaries of losses and loss weights for the datasets.
@@ -146,7 +161,7 @@ def get_combined_datasets(datasets_dict):
 
 
 def build_models(feature_extractor, datasets, input_shape,
-                 share_logits=False):
+                 share_logits=False, with_head=True):
   """Returns combined models for the given datasets.
 
   Creates a tf.keras.Model that has separate inputs and top layers for all
@@ -169,21 +184,25 @@ def build_models(feature_extractor, datasets, input_shape,
   inputs = [tkf.Input(name="%s_in" % x, shape=input_shape)
             for x in ds_names]
   features = [feature_extractor(x) for x in inputs]
-  if share_logits:
-    out_layer = tkf.layers.Dense(num_classes[0], activation="softmax",
-                            name="shared_out")
-    outputs = [rename(out_layer(features[i]), "%s_out" % ds_names[i])
-               for i in range(num_datasets)]
+  if with_head:
+    if share_logits:
+      out_layer = tkf.layers.Dense(num_classes[0], activation="softmax",
+                                   name="shared_out")
+      outputs = [rename(out_layer(features[i]), "%s_out" % ds_names[i])
+                 for i in range(num_datasets)]
+    else:
+      outputs = [tkf.layers.Dense(num_classes[i], activation="softmax",
+                                  name="%s_out" % ds_names[i])(features[i])
+                 for i in range(num_datasets)]
   else:
-    outputs = [tkf.layers.Dense(num_classes[i], activation="softmax",
-                                name="%s_out" % ds_names[i])(features[i])
-              for i in range(num_datasets)]
+    outputs = features
   combined_model = tkf.Model(inputs, outputs, name="combined")
   return combined_model
 
 
 def build_mixture_models(feature_extractor, datasets, input_shape,
                          num_layers, num_templates,
+                         with_head=True,
                          use_shared_mixture_weights=False,
                          share_logits=False):
   """Returns combined mixture weights models for the given datasets.
@@ -230,14 +249,17 @@ def build_mixture_models(feature_extractor, datasets, input_shape,
     mix_weights = [get_mixture_weights(name, inputs[0]) for name in ds_names]
     features = [feature_extractor([inputs[i], *mix_weights[i]])
                 for i in range(num_datasets)]
-  if share_logits:
-    out_layer = get_output_layer(num_classes[0], "shared")
-    outputs = [rename(out_layer(features[i]), "%s_out" % ds_names[i])
-               for i in range(num_datasets)]
+  if with_head:
+    if share_logits:
+      out_layer = get_output_layer(num_classes[0], "shared")
+      outputs = [rename(out_layer(features[i]), "%s_out" % ds_names[i])
+                 for i in range(num_datasets)]
+    else:
+      out_layers = [get_output_layer(num_classes[i], ds_names[i])
+                    for i in range(num_datasets)]
+      outputs = [out_layers[i](features[i]) for i in range(num_datasets)]
   else:
-    out_layers = [get_output_layer(num_classes[i], ds_names[i])
-                  for i in range(num_datasets)]
-    outputs = [out_layers[i](features[i]) for i in range(num_datasets)]
+    outputs = features
 
   combined_model = tkf.Model(inputs, outputs, name="combined")
   return combined_model
@@ -245,7 +267,7 @@ def build_mixture_models(feature_extractor, datasets, input_shape,
 def get_combined_model(
     datasets_info, input_shape, shared=False, share_mixture=False,
     share_logits=False, separate_bn=False, num_layers=16, num_templates=4,
-    **kwargs):
+    with_head=True, **kwargs):
     # tensor_size=16, in_adapter="strided", out_adapter="isometric",
     # dropout=0, kernel_reg=0):
   """Returns the multitask training model.
@@ -267,7 +289,7 @@ def get_combined_model(
   dropout: dropout.
   kernel_regularizer: kernel regularization parameter.
   """
-  
+
   if not shared:
     feature_extractor = cresnet.resnet(
         input_shape=input_shape, num_layers=num_layers,
@@ -275,19 +297,22 @@ def get_combined_model(
         **kwargs)
     combined_model = build_models(
         feature_extractor=feature_extractor, datasets=datasets_info,
-        input_shape=input_shape, share_logits=share_logits)
+        input_shape=input_shape, share_logits=share_logits,
+        with_head=with_head)
   else:
     feature_extractor = sresnet.shared_resnet(
         input_shape=input_shape, num_layers=num_layers,
-        num_templates=num_templates, num_classes=10, 
+        num_templates=num_templates, num_classes=10,
         with_head=False, mixture_weights_as_input=True,
         name="feature_extractor",
         separate_bn=separate_bn, **kwargs)
     combined_model = build_mixture_models(
         feature_extractor=feature_extractor, datasets=datasets_info,
         input_shape=input_shape, num_layers=num_layers,
-        num_templates=num_templates, 
-        use_shared_mixture_weights=share_mixture, share_logits=share_logits)
+        num_templates=num_templates,
+        use_shared_mixture_weights=share_mixture,
+        share_logits=share_logits,
+        with_head=with_head)
   return combined_model
 
 
@@ -351,7 +376,9 @@ def pretrain(new_shape, data_dir, save_path, shared=False, share_mixture=False,
       dropout=dropout, kernel_regularizer=kernel_reg,
       shared=shared, share_mixture=share_mixture,
       share_logits=share_logits, separate_bn=separate_bn,
-      out_filters=[filter_base, 2 * filter_base], depth=depth)
+      out_filters=[filter_base, 2 * filter_base],
+      depth=depth,
+      activation=tf.nn.leaky_relu)
 
   lr_schedule = training.get_lr_schedule(lr, num_epochs)
   losses, loss_weights = get_losses(ds_list, num_datasets, lsmooth)
@@ -359,9 +386,9 @@ def pretrain(new_shape, data_dir, save_path, shared=False, share_mixture=False,
   callbacks, ckpt = training.get_callbacks(save_path, lr_schedule, "pretrained")
   vis_path = os.path.join(save_path, "mix_vis", "pretrained")
   vis_cbk = training.VisualizeCallback(vis_path, domains=ds_list,
-                              num_templates=num_templates,
-                              num_layers=num_layers,
-                              frequency=5)
+                                       num_templates=num_templates,
+                                       num_layers=num_layers,
+                                       frequency=5)
   callbacks.append(vis_cbk)
   if ckpt_path is None:
     ckpt_path = ckpt
@@ -370,7 +397,7 @@ def pretrain(new_shape, data_dir, save_path, shared=False, share_mixture=False,
     try:
       combined_model.load_weights(ckpt_path)
       print("Restored weights from %s" % ckpt_path)
-    except:
+    except ValueError:
       print("could not restore weights from %s" % ckpt_path)
       pass
   combined_model.summary()
@@ -385,7 +412,7 @@ def pretrain(new_shape, data_dir, save_path, shared=False, share_mixture=False,
                               batch_size=batch_size)
   # saving the model
   trained_model.save_weights(ckpt)
-  return trained_model, comb_dataset_train, comb_dataset_test
+  return trained_model, comb_dataset_train, comb_dataset_test, datasets_info
 
 def train_model(model, train_data, test_data, callbacks, optimizer,
                 losses, loss_weights, num_epochs=100, num_steps=None,
@@ -455,7 +482,7 @@ def fix_weights(model, target_dataset, finetune_mode="h", shared=False):
                     .get_layer("weighted_resblock"))
       except ValueError:
         sep_bn = (model.get_layer("feature_extractor")
-                    .get_layer("weighted_res_block_separate_bn"))
+                  .get_layer("weighted_res_block_separate_bn"))
         resblock = sep_bn.resblock
         sep_bn.trainable = True
 
@@ -491,7 +518,7 @@ def copy_weights(model, source, target, num_layers, shared=False):
   model: a tf.keras.Model object.
   source: source domain name.
   target: target domain name.
-  shared: whether the model is shared. 
+  shared: whether the model is shared.
   num_layers: number of resblock layers in the model.
   """
   try:
@@ -504,9 +531,10 @@ def copy_weights(model, source, target, num_layers, shared=False):
 
   if shared:
     for idx in range(num_layers):
-      source_mix =  model.get_layer("%s_mix_%d" % (source, idx))
-      target_mix =  model.get_layer("%s_mix_%d" % (target, idx))
+      source_mix = model.get_layer("%s_mix_%d" % (source, idx))
+      target_mix = model.get_layer("%s_mix_%d" % (target, idx))
       target_mix.set_weights(source_mix.get_weights())
-      print("copied weights from %s_mix_%d to %s_mix_%d" % (source, idx, target, idx))
+      print("copied weights from %s_mix_%d to %s_mix_%d" %
+            (source, idx, target, idx))
 
   return model

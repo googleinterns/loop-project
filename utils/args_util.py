@@ -1,4 +1,5 @@
-import os, argparse
+import os
+import argparse
 
 def get_parser():
   parser = argparse.ArgumentParser()
@@ -33,7 +34,7 @@ def get_parser():
                       help="Output adapter type (default is isometric)")
   parser.add_argument("--target_dataset",
                       type=str,
-                      default="cifar10s",
+                      default="cifar10",
                       help="target dataset")
   parser.add_argument("--out_filter_base", type=int, default=128,
                       help="filter base of the output adapter")
@@ -51,14 +52,15 @@ def get_parser():
                       help="learning rate (default is 0.02)")
   parser.add_argument("--data_dir",
                       type=str,
-                      default='/home/dbash_google_com/datasets/',
+                      default="/home/dbash_google_com/datasets/",
                       help="directory where the datasets will be stored")
   parser.add_argument("--num_epochs", type=int, default=200,
                       help="number of epochs")
   parser.add_argument("--num_steps", type=int, default=1500,
                       help="number of steps per epoch")
   parser.add_argument("--restore", type=int, default=0,
-                      help="if > 0, the model will be restored from checkpoint.")
+                      help="if > 0,"
+                           " the model will be restored from checkpoint.")
   parser.add_argument("--name", type=str, default="default",
                       help="experiment name.")
   parser.add_argument("--save_path", type=str, default="./experiments/",
@@ -72,6 +74,5 @@ def write_config(args, path):
   results_path = os.path.join(path, "config.txt")
   with open(results_path, "w") as fl:
     for arg in vars(args):
-      attr = getattr(args, arg) 
+      attr = getattr(args, arg)
       fl.write("%s: %s\n" % (arg, attr))
-
