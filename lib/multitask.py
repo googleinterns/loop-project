@@ -7,6 +7,7 @@ import lib.weighted_resblock as wblock
 import lib.shared_resnet as sresnet
 import lib.custom_resnet as cresnet
 from utils import args_util, training, datasets_util
+from lib.resnet_parameters import ResNetParameters
 
 # dictionary of lists of datasets
 DATASET_TYPE_DICT = {
@@ -113,8 +114,27 @@ def get_losses(datasets, num_train_ds, label_smoothing=0):
     losses[loss_name] = cce
   return losses, loss_weights
 
+def get_losses_and_callbacks(
+    datasets, num_tr_datasets, prefix, add_mw_callback=False,
+    train_params=training.TrainingParameters(), end_lr_coefficient=0.1):
+  lr_schedule = training.get_lr_schedule(
+      train_params.lr, train_params.num_epochs,
+      end_lr_coefficient=end_lr_coefficient)
+  losses, loss_weights = get_losses(
+      datasets, num_tr_datasets, train_params.lsmooth)
+  print("Loss weights:", loss_weights)
+  callbacks, ckpt = training.get_callbacks(
+      train_params.save_path, lr_schedule, prefix)
+  if add_mw_callback:
+    vis_path = os.path.join(train_params.save_path, "mix_vis", prefix)
+    vis_cbk = training.VisualizeCallback(
+        vis_path, domains=datasets, num_templates=train_params.num_templates,
+        num_layers=train_params.num_layers, frequency=1)
+    callbacks.append(vis_cbk)
+  return callbacks, lr_schedule, losses, loss_weights, ckpt
 
-def get_pretrain_datasets(datasets, image_size, data_dir, augment):
+
+def _get_pretrain_datasets(datasets, image_size, data_dir, augment):
   """A method that returns a dictionary pretraining datasets.
 
   Arguments:
@@ -136,7 +156,7 @@ def get_pretrain_datasets(datasets, image_size, data_dir, augment):
   return datasets_dict, datasets_info
 
 
-def get_combined_datasets(datasets_dict):
+def _combine_datasets(datasets_dict):
   """Returns train and test tf.data.Dataset objects containing all datasets.
 
   Arguments:
@@ -159,10 +179,31 @@ def get_combined_datasets(datasets_dict):
                                                combined_dataset_test_y))
   return combined_dataset_train, combined_dataset_test
 
+def get_datasets(datasets, new_shape,
+                 data_dir, augment=False, batch_size=32):
+  """Returns train and test data objects along with ifo.
 
-def build_models(feature_extractor, datasets, input_shape,
-                 share_logits=False, with_head=True):
-  """Returns combined models for the given datasets.
+  Arguments:
+    datasets: list of dataset names.
+    new_shape: the images be reshape to this shape.
+    data_dir: directory where the datasets are stored.
+    augment: if True, images will be augmented.
+    batch_size: batch size.
+  """
+  dataset_dict, info = _get_pretrain_datasets(
+      datasets, image_size=new_shape,
+      data_dir=data_dir, augment=augment)
+
+  ds_train, ds_test = _combine_datasets(dataset_dict)
+  ds_train = (ds_train.shuffle(buffer_size=100)
+              .batch(batch_size, drop_remainder=True))
+  ds_test = (ds_test.shuffle(buffer_size=100)
+             .batch(batch_size, drop_remainder=True))
+  return ds_train, ds_test, info
+
+def build_model(feature_extractor, datasets, input_shape,
+                share_logits=False, with_head=True):
+  """Returns combined model for the given datasets.
 
   Creates a tf.keras.Model that has separate inputs and top layers for all
   datasets in the experiment and shared feature extractor and I/O adapters.
@@ -200,12 +241,11 @@ def build_models(feature_extractor, datasets, input_shape,
   return combined_model
 
 
-def build_mixture_models(feature_extractor, datasets, input_shape,
-                         num_layers, num_templates,
-                         with_head=True,
-                         use_shared_mixture_weights=False,
-                         share_logits=False):
-  """Returns combined mixture weights models for the given datasets.
+def build_mixture_model(feature_extractor, datasets, input_shape,
+                        num_layers, num_templates,
+                        with_head=True,
+                        share_logits=False):
+  """Returns combined mixture weights model for the given datasets.
 
   Creates a tf.keras.Model that has separate inputs and top layers for all
   datasets in the experiment and shared feature extractor and I/O adapters.
@@ -216,9 +256,6 @@ def build_mixture_models(feature_extractor, datasets, input_shape,
   input_shape: model input shape.
   num_layers: number of residual layers in feature extractor.
   num_templates: number of templates for mixture weights.
-  use_shared_mixture_weights: if True, the mixture weights will be shared across
-  domains; otherwise, mixture weights will be created for each dataset
-  separately.
   share_logits: If True, single logits layer will be shared across datasets,
   otherwise separate logits layers will be created for each dataset.
   """
@@ -242,13 +279,9 @@ def build_mixture_models(feature_extractor, datasets, input_shape,
   num_datasets = len(datasets)
 
   inputs = [tkf.Input(name="%s_in" % x, shape=input_shape) for x in ds_names]
-  if use_shared_mixture_weights:
-    mixture_weights = get_mixture_weights("shared", inputs)
-    features = [feature_extractor([x, *mixture_weights]) for x in inputs]
-  else:
-    mix_weights = [get_mixture_weights(name, inputs[0]) for name in ds_names]
-    features = [feature_extractor([inputs[i], *mix_weights[i]])
-                for i in range(num_datasets)]
+  mix_weights = [get_mixture_weights(name, inputs[0]) for name in ds_names]
+  features = [feature_extractor([inputs[i], *mix_weights[i]])
+              for i in range(num_datasets)]
   if with_head:
     if share_logits:
       out_layer = get_output_layer(num_classes[0], "shared")
@@ -265,158 +298,83 @@ def build_mixture_models(feature_extractor, datasets, input_shape,
   return combined_model
 
 def get_combined_model(
-    datasets_info, input_shape, shared=False, share_mixture=False,
-    share_logits=False, separate_bn=False, num_layers=16, num_templates=4,
-    with_head=True, **kwargs):
-    # tensor_size=16, in_adapter="strided", out_adapter="isometric",
-    # dropout=0, kernel_reg=0):
+    datasets_info, model_params: ResNetParameters,
+    shared=False, share_logits=False, with_head=True):
   """Returns the multitask training model.
 
   Arguments:
   datasets_info: dataset info dictionary.
-  input_shape: shape of the input image.
   shared: if True, the shared model will be created.
-  share_mixture: if True, the mixture weights will be shared across
-  domains.
+  model_params: feature extractor parameters (ResNetParameters).
   share_logits: if True, the logits layer will be shared.
-  num_layers: number of residual blocks in the feature extractor.
-  num_templates: number of templates.
-
-  Feature extractor arguments such as:
-  tensor_size: size of the resblock input tensor.
-  in_adapter: input adapter type.
-  out_adapter: output adapter type.
-  dropout: dropout.
-  kernel_regularizer: kernel regularization parameter.
   """
-
+  model_params.name = "feature_extractor"
+  model_params.mixture_weights_as_input = True
   if not shared:
-    feature_extractor = cresnet.resnet(
-        input_shape=input_shape, num_layers=num_layers,
-        num_classes=10, name="feature_extractor", with_head=False,
-        **kwargs)
-    combined_model = build_models(
+    feature_extractor = cresnet.resnet(model_params)
+    combined_model = build_model(
         feature_extractor=feature_extractor, datasets=datasets_info,
-        input_shape=input_shape, share_logits=share_logits,
+        input_shape=model_params.input_shape, share_logits=share_logits,
         with_head=with_head)
   else:
-    feature_extractor = sresnet.shared_resnet(
-        input_shape=input_shape, num_layers=num_layers,
-        num_templates=num_templates, num_classes=10,
-        with_head=False, mixture_weights_as_input=True,
-        name="feature_extractor",
-        separate_bn=separate_bn, **kwargs)
-    combined_model = build_mixture_models(
+    feature_extractor = sresnet.shared_resnet(model_params)
+    combined_model = build_mixture_model(
         feature_extractor=feature_extractor, datasets=datasets_info,
-        input_shape=input_shape, num_layers=num_layers,
-        num_templates=num_templates,
-        use_shared_mixture_weights=share_mixture,
-        share_logits=share_logits,
-        with_head=with_head)
+        input_shape=model_params.input_shape,
+        num_layers=model_params.num_layers,
+        num_templates=model_params.num_templates,
+        share_logits=share_logits, with_head=with_head)
   return combined_model
 
 
-def pretrain(new_shape, data_dir, save_path, shared=False, share_mixture=False,
-             share_logits=False, separate_bn=False,
-             dataset_type="digits", aug=False, batch_size=32, lr=2*1e-3,
-             num_epochs=200, num_steps=1500, num_datasets=1,
-             tensor_size=16, num_layers=16, num_templates=4,
-             in_adapter="strided", out_adapter="isometric",
-             filter_base=128, depth=40,
-             dropout=0, kernel_reg=0, lsmooth=0, restore_checkpoint=False,
-             ckpt_path=None):
-  """Returns a pretrained model with given parameters.
+def train_model(model, train_data, test_data, datasets,
+                num_train_datasets, target_dataset=None,
+                finetune_mode="all", shared=False, prefix="Pretrained",
+                train_params=training.TrainingParameters()):
+  """Pretrains or finetunes the model on source/target datasets.
 
   Arguments:
-  new_shape: the images will be reshaped to this size.
-  data_dir: the datasets will be stored in this folder.
-  save_path: the checkponts, logs and results will be saved to this folder.
-  shared: If True, the shared model will be created.
-  share_mixture: If True, the mixture weights are shared across tasks.
-  share_logits: If True, the last logits layer will be shared across datasets.
-  dataset_type: type of dataset: `digits`, `characters`, `small_natural` or
-    `natural`.
-  aug: whether the data augmentation should be used.
-  batch_size: batch size.
-  lr: initial learning rate.
-  num_epochs: number of epochs.
-  num_steps: number of steps per epoch.
-  num_datasets: how many datasets the model should be pretrained on.
-  tensor_size: size of resblock tensor.
-  num_layers: number of layers in the network.
-  num_templates: number of templates.
-  in_adapter: input adapter type.
-  out_adapter: output adapter type.
-  dropout: dropout (drop).
-  kernel_reg: kernel regularizer parameter.
-  lsmooth: label smoothing coefficient.
-  restore_checkpoint: if True, the model will be restored from the latest
-    checkpoint.
+  model: combined model.
+  train_data: training data.
+  test_data: test data.
+  datasets: list of datasets names.
+  num_train_datasets: number of datasets to thain the model on.
+  target_dataset: target dataset. If not None, only the target loss will be
+  minimized, and the weights will be fixed.
+  train_params: training parameters (TrainingParameters object).
+  finetune_mode: string representing the finetuning mode.
+  shared: if True, it is assumed that the model is shared.
   """
-  h, w, _ = new_shape
-  ds_list = DATASET_TYPE_DICT[dataset_type]
-  if ds_list is None:
-    raise ValueError("Given dataset type is not supported")
-
-  # acquiring the combined datasets
-  dataset_dict, datasets_info = get_pretrain_datasets(
-      datasets=ds_list, image_size=[h, w], data_dir=data_dir, augment=aug)
-  ds_list = list(dataset_dict.keys())
-  print("Training the model on datasets: ", ds_list)
-  comb_dataset_train, comb_dataset_test = get_combined_datasets(dataset_dict)
-  comb_dataset_train = (comb_dataset_train.shuffle(buffer_size=100)
-                        .batch(batch_size, drop_remainder=True))
-  comb_dataset_test = (comb_dataset_test.shuffle(buffer_size=100)
-                       .batch(batch_size, drop_remainder=True))
-  # creating the multitask model
-  combined_model = get_combined_model(
-      datasets_info, new_shape, num_layers=num_layers,
-      num_templates=num_templates, tensor_size=tensor_size,
-      in_adapter=in_adapter, out_adapter=out_adapter,
-      dropout=dropout, kernel_regularizer=kernel_reg,
-      shared=shared, share_mixture=share_mixture,
-      share_logits=share_logits, separate_bn=separate_bn,
-      out_filters=[filter_base, 2 * filter_base],
-      depth=depth,
-      activation=tf.nn.leaky_relu)
-
-  lr_schedule = training.get_lr_schedule(lr, num_epochs)
-  losses, loss_weights = get_losses(ds_list, num_datasets, lsmooth)
-  print(loss_weights)
-  callbacks, ckpt = training.get_callbacks(save_path, lr_schedule, "pretrained")
-  vis_path = os.path.join(save_path, "mix_vis", "pretrained")
-  vis_cbk = training.VisualizeCallback(vis_path, domains=ds_list,
-                                       num_templates=num_templates,
-                                       num_layers=num_layers,
-                                       frequency=5)
-  callbacks.append(vis_cbk)
-  if ckpt_path is None:
-    ckpt_path = ckpt
-
-  if restore_checkpoint > 0:
-    try:
-      combined_model.load_weights(ckpt_path)
-      print("Restored weights from %s" % ckpt_path)
-    except ValueError:
-      print("could not restore weights from %s" % ckpt_path)
-      pass
-  combined_model.summary()
-
+  fitting_info = get_losses_and_callbacks(
+      datasets=datasets, num_tr_datasets=num_train_datasets, prefix=prefix,
+      end_lr_coefficient=0.2, train_params=train_params, add_mw_callback=shared)
+  callbacks, lr_schedule, losses, loss_weights, ckpt = fitting_info
+  if train_params.restore:
+    training.restore_model(ckpt, model)
+  # modify loss weights if target_dataset is given
+  if target_dataset is not None:
+    for loss in loss_weights:
+      loss_weights[loss] = float(("%s_out" % target_dataset) == loss)
+    fixed_model = fix_weights(model, target_dataset=target_dataset,
+                              finetune_mode=finetune_mode,
+                              shared=shared)
+    fixed_model.summary()
   optimizer = tf.keras.optimizers.RMSprop(learning_rate=lr_schedule(0))
+
   # fitting the model
-  trained_model = train_model(combined_model, comb_dataset_train,
-                              comb_dataset_test, callbacks=callbacks,
-                              optimizer=optimizer, losses=losses,
-                              loss_weights=loss_weights,
-                              num_epochs=num_epochs, num_steps=num_steps,
-                              batch_size=batch_size)
+  trained_model = _fit_model(
+      model, train_data, test_data, callbacks=callbacks, optimizer=optimizer,
+      losses=losses, loss_weights=loss_weights,
+      num_epochs=train_params.num_epochs, num_steps=train_params.num_steps,
+      batch_size=train_params.batch_size)
   # saving the model
   trained_model.save_weights(ckpt)
-  return trained_model, comb_dataset_train, comb_dataset_test, datasets_info
+  return trained_model
 
-def train_model(model, train_data, test_data, callbacks, optimizer,
-                losses, loss_weights, num_epochs=100, num_steps=None,
-                batch_size=32):
+
+def _fit_model(model, train_data, test_data, callbacks, optimizer,
+               losses, loss_weights, num_epochs=100, num_steps=None,
+               batch_size=32):
   """Compiles and fits the model to the training data.
 
   Arguments:
@@ -476,17 +434,18 @@ def fix_weights(model, target_dataset, finetune_mode="h", shared=False):
 
   if "b" in finetune_mode:
     if shared:
-      model.get_layer("feature_extractor").trainable = True
-      try:
-        resblock = (model.get_layer("feature_extractor")
-                    .get_layer("weighted_resblock"))
-      except ValueError:
-        sep_bn = (model.get_layer("feature_extractor")
-                  .get_layer("weighted_res_block_separate_bn"))
-        resblock = sep_bn.resblock
-        sep_bn.trainable = True
+      f_extr = model.get_layer("feature_extractor")
+      f_extr.trainable = True
+      for layer in f_extr.layers:
+        if "weighted_res_block_separate_bn" in layer.name:
+          resblock = layer.resblock
+          layer.trainable = True
+        elif "weighted_resblock" in layer.name:
+          resblock = layer
+          layer.trainable = True
+        else:
+          layer.trainable = False
 
-      resblock.trainable = True
       for layer in resblock.layers:
         if "weighted_batch_normalization" in layer.name:
           print("Layer set to be trainable: ", layer.name)
@@ -507,7 +466,7 @@ def fix_weights(model, target_dataset, finetune_mode="h", shared=False):
               block_layer.trainable = False
         else:
           layer.trainable = False
-
+  print(model.trainable_variables)
   return model
 
 def copy_weights(model, source, target, num_layers, shared=False):
@@ -524,10 +483,13 @@ def copy_weights(model, source, target, num_layers, shared=False):
   try:
     model.get_layer("shared_out")
   except ValueError:
-    source_out = model.get_layer("%s_out" % source)
-    target_out = model.get_layer("%s_out" % target)
-    target_out.set_weights(source_out.get_weights())
-    print("copied head weights.")
+    try:
+      source_out = model.get_layer("%s_out" % source)
+      target_out = model.get_layer("%s_out" % target)
+      target_out.set_weights(source_out.get_weights())
+      print("copied head weights.")
+    except ValueError:
+      print("No head to copy.")
 
   if shared:
     for idx in range(num_layers):

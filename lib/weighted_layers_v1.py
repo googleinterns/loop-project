@@ -90,7 +90,7 @@ class WeightedConv2D(Conv2D):
     if self.templates_learnable:
       # allocate new weights for the leanable templates
       self.template_kernel = self.add_weight(
-          name='template_kernel',
+          name="template_kernel",
           shape=template_kernel_shape,
           initializer=self.kernel_initializer,
           regularizer=self.kernel_regularizer,
@@ -99,7 +99,7 @@ class WeightedConv2D(Conv2D):
           dtype=self.dtype)
       if self.use_bias:
         self.template_bias = self.add_weight(
-            name='template_bias',
+            name="template_bias",
             shape=template_bias_shape,
             initializer=self.bias_initializer,
             regularizer=self.bias_regularizer,
@@ -170,7 +170,7 @@ class WeightedConv2D(Conv2D):
 
   def get_config(self):
     config = super(WeightedConv2D, self).get_config()
-    config['templates_learnable'] = self.templates_learnable
+    config["templates_learnable"] = self.templates_learnable
     return config
 
 
@@ -255,14 +255,14 @@ class WeightedDepthwiseConv2D(DepthwiseConv2D):
 
   def build(self, input_shape):
     if len(input_shape) < 4:
-      raise ValueError('Inputs to `DepthwiseConv2D` should have rank 4. '
-                       'Received input shape:', str(input_shape))
+      raise ValueError("Inputs to `DepthwiseConv2D` should have rank 4. "
+                       "Received input shape:", str(input_shape))
     input_shape = tensor_shape.TensorShape(input_shape)
     channel_axis = self._get_channel_axis()
     if input_shape.dims[channel_axis].value is None:
-      raise ValueError('The channel dimension of the inputs to '
-                       '`DepthwiseConv2D` '
-                       'should be defined. Found `None`.')
+      raise ValueError("The channel dimension of the inputs to "
+                       "`DepthwiseConv2D` "
+                       "should be defined. Found `None`.")
     input_dim = int(input_shape[channel_axis])
     self.kernel_shape = (self.kernel_size[0], self.kernel_size[1],
                          input_dim, self.depth_multiplier)
@@ -275,13 +275,13 @@ class WeightedDepthwiseConv2D(DepthwiseConv2D):
       self.template_kernel = self.add_weight(
           shape=template_kernel_shape,
           initializer=self.depthwise_initializer,
-          name='depthwise_template_kernel',
+          name="depthwise_template_kernel",
           regularizer=self.depthwise_regularizer,
           constraint=self.depthwise_constraint)
       if self.use_bias:
         self.template_bias = self.add_weight(shape=template_bias_shape,
                                              initializer=self.bias_initializer,
-                                             name='template_bias',
+                                             name="template_bias",
                                              regularizer=self.bias_regularizer,
                                              constraint=self.bias_constraint)
       else:
@@ -336,6 +336,6 @@ class WeightedDepthwiseConv2D(DepthwiseConv2D):
 
   def get_config(self):
     config = super(WeightedDepthwiseConv2D, self).get_config()
-    config['num_templates'] = self.num_templates
-    config['templates_learnable'] = self.templates_learnable
+    config["num_templates"] = self.num_templates
+    config["templates_learnable"] = self.templates_learnable
     return config

@@ -1,11 +1,13 @@
 """ This code runs unsupervised domain adaptation experiments.
 """
 import os
+from dataclasses import dataclass
 import tensorflow as tf
 import tensorflow.keras as tfk
 from lib import multitask as mt
 from lib import adversarial_da as adv
 from lib import moment_matching_da as mm
+from lib.resnet_parameters import ResNetParameters
 from utils import training
 from utils import args_util
 
@@ -24,151 +26,219 @@ def get_custom_parser():
                       type=float,
                       default=1.,
                       help="DA loss weight.")
+  parser.add_argument("--copy_from",
+                      type=str,
+                      default="",
+                      help="Target MW will be copied from this source.")
   return parser
 
-def get_da_model(classifier, num_layers,
-                 ds_list, target_domain,
-                 losses, loss_weights,
-                 da_mode="discr", block_shape=(16, 16, 40),
-                 da_loss_weight=1.,
-                 lrate=0.002):
+@dataclass
+class DomainAdaptationParameters:
+  """Stores the domain adaptation parameters.
+
+  Arguments:
+  target_domain: target domain name.
+  da_mode: domain adaptation mode.
+  da_loss_weight: DA loss weight.
+  copy_from: name of the source domain from which to copy mixture weights.
+  block_shape: resblock input shape.
+  num_classes: number of classes.
+  """
+  target_domain: str = None
+  da_mode: str = "discr"
+  da_loss_weight: float = 1.
+  copy_from: str = ""
+  block_shape: tuple = (16, 16, 4)
+  num_classes: int = 10
+  num_layers: int = 16
+  lr: float = 2*1e-3
+
+  def init_from_args(self, args):
+    """Initialize fields from arguments."""
+    self.target_domain = args.target_dataset
+    self.da_mode = args.da_mode
+    self.da_loss_weight = args.da_loss_weight
+    self.num_layers = args.num_blocks
+    self.lr = args.lr
+    self.block_shape = (args.size, args.size, args.depth)
+    self.copy_from = args.copy_from
+
+
+def eval_source_only(model, test_ds, datasets, target_domain, num_layers,
+                     results_file, da_mode):
+  """Saves source-only accuracy on target for all sources.
+
+  Arguments:
+  model: trained classifier model.
+  test_ds: test dataset.
+  datasets: list of dataset names.
+  target_domain: target domain name.
+  num_layers: number of residual layers.
+  results_file: results file.
+  da_mode: domain adaptation mode string.
+  """
+  if "mmv2" in da_mode:
+    so_model = model.headless
+  else:
+    so_model = model.classifier
+  for ds in datasets:
+    # copying the source weights to target variables
+    _ = mt.copy_weights(so_model, source=ds,
+                        target=target_domain,
+                        num_layers=num_layers,
+                        shared=True)
+    scores = model.evaluate(test_ds)
+    mt.write_scores(datasets, scores, results_file, f_mode="a+",
+                    scores_name="Source only %s" % ds)
+
+
+def get_da_model(classifier, ds_list, losses, loss_weights, lr_schedule,
+                 da_params: DomainAdaptationParameters):
   """Returns a compiled DA model of a given type.
 
   Arguments:
   classifier: source classifier model.
-  num_layers: number of residual blocks.
   ds_list: list of dataset names.
-  target_domain: target domain name.
   losses: dictionary of classification losses for all domains.
   loss_weights: dictionary of classification loss weights.
-  da_mode: domain adaptation mode: discr, mm or mmv2.
-  block_shape: residual block output shape.
-  da_loss_weight: DA loss weight.
+  lr_schedule: learning rate schedule function.
+  da_params: domain adaptation parameters.
   """
-  cl_optimizer = tfk.optimizers.RMSprop(learning_rate=lrate)
-# creating a DA model
-  if "discr" in da_mode:
+  cl_optimizer = tfk.optimizers.RMSprop(learning_rate=lr_schedule(0))
+  da_lr_schedule = tfk.optimizers.schedules.PolynomialDecay(
+      2*1e-3, decay_steps=100, end_learning_rate=1e-6, power=1.0)
+  da_optimizer = tfk.optimizers.Adam(learning_rate=da_lr_schedule)
+  # creating a DA model
+  if "discr" in da_params.da_mode:
     discriminator = adv.get_discriminator(
-        input_shape=block_shape, num_layers=2,
+        input_shape=da_params.block_shape, num_layers=2,
         dropout=0, activation=tf.nn.leaky_relu)
-
     da_model = adv.AdversarialClassifier(
         discriminator=discriminator, classifier=classifier,
-        domains=ds_list, target_domain=target_domain,
-        num_layers=num_layers)
+        domains=ds_list, target_domain=da_params.target_domain,
+        num_layers=da_params.num_layers, copy_mix_from=da_params.copy_from)
     da_model.compile(
         cl_optimizer=cl_optimizer,
-        d_optimizer=tfk.optimizers.SGD(learning_rate=0.0002),
-        adv_optimizer=tfk.optimizers.Adam(learning_rate=0.0002),
+        d_optimizer=da_optimizer, adv_optimizer=da_optimizer,
         loss_fn=tfk.losses.BinaryCrossentropy(from_logits=False),
-        cl_losses=losses,
-        cl_loss_weights=loss_weights,
-        d_loss_weight=1.,
-        adv_loss_weight=da_loss_weight)
+        cl_losses=losses, cl_loss_weights=loss_weights, d_loss_weight=1.,
+        adv_loss_weight=da_params.da_loss_weight)
 
-  elif "mmv2" in da_mode:
-    raise NotImplementedError("mmv2 is not implemented yet.")
-  else:
-    da_model = mm.MomentMatchingClassifier(
-        classifier=classifier,
-        domains=ds_list, target_domain=target_domain,
-        num_layers=num_layers)
+  elif "mmv2" in da_params.da_mode:
+    cl2_optimizer = tfk.optimizers.RMSprop(learning_rate=2*1e-3)
+    da_model = mm.MomentMatchingClassifierV2(
+        classifier=classifier, domains=ds_list,
+        target_domain=da_params.target_domain,
+        num_layers=da_params.num_layers, copy_mix_from=da_params.copy_from,
+        num_classes=da_params.num_classes)
     da_model.compile(
-        cl_optimizer=cl_optimizer,
-        mm_optimizer=tfk.optimizers.Adam(learning_rate=0.001),
-        mm_loss_weight=1,
-        cl_losses=losses,
+        cl1_optimizer=cl_optimizer, cl2_optimizer=cl2_optimizer,
+        mm_optimizer=da_optimizer, mm_loss_weight=da_params.da_loss_weight,
+        cl_losses=losses, cl_loss_weights=loss_weights)
+
+  elif "mm" in da_params.da_mode:
+    da_model = mm.MomentMatchingClassifier(
+        classifier=classifier, domains=ds_list,
+        target_domain=da_params.target_domain,
+        num_layers=da_params.num_layers, copy_mix_from=da_params.copy_from)
+    da_model.compile(
+        cl_optimizer=cl_optimizer, mm_optimizer=da_optimizer,
+        mm_loss_weight=da_params.da_loss_weight, cl_losses=losses,
         cl_loss_weights=loss_weights)
+  else:
+    raise ValueError("Given DA mode is not implemented.")
   return da_model
 
+def train_da_model(classifier, datasets, train_ds, test_ds, num_tr_datasets,
+                   prefix="DA", da_params=DomainAdaptationParameters(),
+                   train_params=training.TrainingParameters()):
+  """Trains the domain adaptation model.
 
+  Arguments:
+  classifier: classifier model.
+  datasets: list of datasets names.
+  train_ds: train dataset.
+  test_ds: test_dataset.
+  num_tr_datasets: number of source datasets.
+  da_params: domain adaptation parameters.
+  prefix: experiment prefix.
+  train_params: training parameters (TrainingParameters object).
+  """
+  # Starting DA
+  fitting_info = mt.get_losses_and_callbacks(
+      datasets=datasets, num_tr_datasets=num_tr_datasets, prefix=prefix,
+      add_mw_callback=False, end_lr_coefficient=0.3, train_params=train_params)
+  callbacks, lr_schedule, losses, loss_weights, ckpt = fitting_info
+  da_model = get_da_model(classifier, datasets, losses=losses,
+                          lr_schedule=lr_schedule, loss_weights=loss_weights,
+                          da_params=da_params)
+  print("Training DA model on source and target")
+  # fit the DA model
+  da_model.fit(
+      train_ds.prefetch(tf.data.experimental.AUTOTUNE),
+      epochs=train_params.num_epochs, steps_per_epoch=train_params.num_steps,
+      validation_data=test_ds, callbacks=callbacks)
+  da_model.save_weights(ckpt)
+  return da_model
 
 def main():
-  parser = get_custom_parser()
-  args = parser.parse_args()
-  args.save_path = os.path.abspath(args.save_path)
-  exp_path = os.path.join(args.save_path, args.name)
-  if not os.path.exists(exp_path):
-    os.makedirs(exp_path)
-  args_util.write_config(args, exp_path)
+  args, exp_path = args_util.get_args(get_custom_parser)
   results_file = os.path.join(exp_path, "results.txt")
+  if len(args.copy_from) == 0:
+    args.copy_from = None
 
-  if len(args.ckpt_path) == 0:
-    args.ckpt_path = None
   # obtaining the datasets
   ds_list = mt.DATASET_TYPE_DICT[args.dataset_type]
   h = args.reshape_to
-  dataset_dict, info = mt.get_pretrain_datasets(
-      ds_list, image_size=[h, h],
-      data_dir=args.data_dir, augment=args.aug > 0)
-  ds_list = list(dataset_dict.keys())
-
-  ds_train, ds_test = mt.get_combined_datasets(dataset_dict)
-  ds_train = (ds_train.shuffle(buffer_size=100)
-              .batch(args.batch_size, drop_remainder=True))
-  ds_test = (ds_test.shuffle(buffer_size=100)
-             .batch(args.batch_size, drop_remainder=True))
+  ds_train, ds_test, info = mt.get_datasets(
+      ds_list, new_shape=[h, h], data_dir=args.data_dir, augment=args.aug > 0,
+      batch_size=args.batch_size)
+  ds_list = list(info.keys())
   # create the main classifier
+  model_params = ResNetParameters()
+  model_params.init_from_args(args)
+  model_params.with_head = False
+  model_params.shared = True
+  model_params.activation = tf.nn.leaky_relu
   classifier = mt.get_combined_model(
-      info, [h, h, 3], num_layers=args.num_blocks,
-      num_templates=args.num_templates, tensor_size=args.size,
-      in_adapter=args.in_adapter_type, out_adapter=args.out_adapter_type,
-      dropout=args.dropout, kernel_regularizer=args.kernel_reg,
-      shared=args.shared > 0, share_mixture=args.share_mixture > 0,
-      share_logits=args.share_logits > 0, separate_bn=args.sep_bn > 0,
-      out_filters=[args.out_filter_base, 2 * args.out_filter_base],
-      depth=args.depth, activation=tf.nn.leaky_relu)
+      datasets_info=info, model_params=model_params, shared=args.shared,
+      share_logits=True, with_head=not "mmv2" in args.da_mode)
+  classifier.summary()
 
-  lr_schedule = training.get_lr_schedule(args.lr, args.num_epochs, 0.5)
-  losses, loss_weights = mt.get_losses(
-      ds_list, args.num_datasets, args.lsmooth)
-  print(loss_weights)
-  callbacks, ckpt = training.get_callbacks(exp_path, lr_schedule, "checkpoint")
-
-  if args.ckpt_path is None:
-    args.ckpt_path = ckpt
-  # create the DA model
-  da_model = get_da_model(
-      classifier, args.num_blocks, ds_list,
-      target_domain=args.target_dataset,
-      losses=losses, loss_weights=loss_weights,
-      da_mode=args.da_mode,
-      block_shape=(args.size, args.size, args.depth),
-      da_loss_weight=args.da_loss_weight,
-      lrate=args.lr)
-
-  if args.restore > 0:
-    try:
-      da_model.load_weights(args.ckpt_path)
-      print("Restored weights from %s" % args.ckpt_path)
-    except ValueError:
-      print("could not restore weights from %s" % args.ckpt_path)
-      pass
+  if args.num_epochs > 0 and not "mmv2" in args.da_mode:
+    print("Pretraining the model on source domains")
+    train_params = training.TrainingParameters()
+    train_params.init_from_args(args)
+    classifier = mt.train_model(
+        classifier, train_data=ds_train, test_data=ds_test,
+        datasets=ds_list, finetune_mode=None, shared=args.shared > 0,
+        prefix="Pretrained", target_dataset=None,
+        num_train_datasets=args.num_datasets, train_params=train_params)
+    scores = classifier.evaluate(ds_test)
+    mt.write_scores(ds_list, scores, results_file, f_mode="w+",
+                    scores_name="Pretraining")
+  # Starting DA
+  num_classes = info[ds_list[0]]["num_classes"]
   # fit the DA model
-  da_model.fit(
-      ds_train.prefetch(tf.data.experimental.AUTOTUNE),
-      epochs=args.num_epochs,
-      steps_per_epoch=args.num_steps,
-      validation_data=ds_test,
-      callbacks=callbacks)
+  train_params = training.TrainingParameters()
+  train_params.init_from_args(args)
+  train_params.num_epochs = args.num_epochs_finetune
+  da_params = DomainAdaptationParameters()
+  da_params.init_from_args(args)
+  da_params.num_classes = num_classes
+  da_model = train_da_model(
+      classifier, datasets=ds_list, train_ds=ds_train, test_ds=ds_test,
+      num_tr_datasets=args.num_datasets, prefix="DA",
+      da_params=da_params, train_params=train_params)
   # Evaluate DA results
   scores = da_model.evaluate(ds_test)
-  print(scores)
-  mt.write_scores(ds_list, scores, results_file, f_mode="w",
+  mt.write_scores(ds_list, scores, results_file, f_mode="a+",
                   scores_name="DA")
-
   # evaluate source-only results
-  for ds in ds_list:
-    # copying the source weights to target variables
-    so_model = mt.copy_weights(da_model.classifier, source=ds,
-                               target=args.target_dataset,
-                               num_layers=args.num_blocks,
-                               shared=args.shared > 0)
-
-    scores = so_model.evaluate(ds_test)
-    mt.write_scores(ds_list, scores, results_file, f_mode="w+",
-                    scores_name="Source only %s" % ds)
-
+  eval_source_only(
+      da_model, datasets=ds_list, target_domain=args.target_dataset,
+      num_layers=args.num_blocks, results_file=results_file,
+      da_mode=args.da_mode, test_ds=ds_test)
 
 
 if __name__ == "__main__":

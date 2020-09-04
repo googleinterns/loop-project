@@ -1,6 +1,7 @@
 import os
 import argparse
 
+
 def get_parser():
   parser = argparse.ArgumentParser()
   parser.add_argument("--shared",
@@ -8,7 +9,7 @@ def get_parser():
                       help="if > 0, the model will use shared resnet.")
   parser.add_argument("--reshape_to", type=int, default=32,
                       help="reshape image to this size")
-  parser.add_argument("--size", type=int, default=8,
+  parser.add_argument("--size", type=int, default=16,
                       help="tensor size along X and Y axis")
   parser.add_argument("--depth", type=int, default=40,
                       help="number of channels in the resblock output")
@@ -76,3 +77,24 @@ def write_config(args, path):
     for arg in vars(args):
       attr = getattr(args, arg)
       fl.write("%s: %s\n" % (arg, attr))
+
+def get_args(parser_fn=None):
+  """Returns arguments and experiment path.
+
+  Arguments:
+  parser_fn: function that returns a parser.
+  """
+  if parser_fn is None:
+    parser_fn = get_parser
+  parser = parser_fn()
+  args = parser.parse_args()
+  args.save_path = os.path.abspath(args.save_path)
+  exp_path = os.path.join(args.save_path, args.name)
+  if not os.path.exists(exp_path):
+    os.makedirs(exp_path)
+  write_config(args, exp_path)
+  if len(args.ckpt_path) == 0:
+    args.ckpt_path = None
+  return args, exp_path
+
+

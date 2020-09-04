@@ -144,10 +144,10 @@ def preprocess_dataset(dataset, image_size, num_classes, augment=False,
   num_classes: number of classes in the dataset.
   augment: if True, augmentation will be preformed.
   repeat: if True, the dataset will be repeated."""
-  def take_x(x, y):
+  def take_x(x, _):
     return x
 
-  def take_y(x, y):
+  def take_y(_, y):
     return y
 
   def augment_fn(image, label):

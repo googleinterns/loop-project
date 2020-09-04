@@ -29,9 +29,9 @@ class WeightedMixIn():
 
     field_name = weight_name if field_name is None else field_name
     self.tracked_template_names[weight_name] = field_name
-    if not hasattr(self, 'add_weight'):
+    if not hasattr(self, "add_weight"):
       raise TypeError("The object must have an attribute `add_weight`.")
-    # self.add_weight = self.add_mix_weight
+
 
   def mixin_build(self, input_shape):
     """replacement for the `build` function of the other parent class.
@@ -47,14 +47,14 @@ class WeightedMixIn():
     """if the variable is assigned to be templated, adds template weights,
     otherwise adds variable weights as usual."""
 
-    if not hasattr(self, 'num_templates'):
+    if not hasattr(self, "num_templates"):
       raise TypeError("The object must have an attribute `num_templates`.")
 
-    if 'name' in kwargs and kwargs['name'] in self.tracked_template_names:
+    if "name" in kwargs and kwargs["name"] in self.tracked_template_names:
       new_kwargs = kwargs.copy()
-      new_kwargs['shape'] = (self.num_templates,) + kwargs['shape']
-      self.templates[kwargs['name']] = self._base_add_weight(**new_kwargs)
-      return tf.zeros(shape=kwargs['shape'])
+      new_kwargs["shape"] = (self.num_templates,) + kwargs["shape"]
+      self.templates[kwargs["name"]] = self._base_add_weight(**new_kwargs)
+      return tf.zeros(shape=kwargs["shape"])
     return self._base_add_weight(**kwargs)
 
   def assign_mixture_value(self, name, mixture_weights):
@@ -156,9 +156,9 @@ class WeightedBatchNormalizationSeparate(WeightedMixIn, BatchNormalization):
     BatchNormalization.__init__(self, **new_kwargs)
     self.num_templates = num_templates
     if "scale" not in kwargs or kwargs["scale"]:
-      self.add_template_variable(weight_name='template_gamma')
+      self.add_template_variable(weight_name="template_gamma")
     if "center" not in kwargs or kwargs["center"]:
-      self.add_template_variable(weight_name='template_beta')
+      self.add_template_variable(weight_name="template_beta")
     mixture_input_spec = InputSpec(ndim=1)
     self.input_spec = (self.input_spec, mixture_input_spec)
 
@@ -166,7 +166,7 @@ class WeightedBatchNormalizationSeparate(WeightedMixIn, BatchNormalization):
     BatchNormalization.build(self, input_shape)
     param_shape = (input_shape[self.axis[0]],)
     self.template_gamma = self.add_weight(
-        name='template_gamma',
+        name="template_gamma",
         shape=param_shape,
         dtype=self._param_dtype,
         initializer=self.gamma_initializer,
@@ -175,7 +175,7 @@ class WeightedBatchNormalizationSeparate(WeightedMixIn, BatchNormalization):
         trainable=True,
         experimental_autocast=False)
     self.template_beta = self.add_weight(
-        name='template_beta',
+        name="template_beta",
         shape=param_shape,
         dtype=self._param_dtype,
         initializer=self.beta_initializer,
@@ -187,8 +187,10 @@ class WeightedBatchNormalizationSeparate(WeightedMixIn, BatchNormalization):
   def call(self, inputs, training=True):
     layer_inputs = inputs[0]
     mix_weights = inputs[1]
-    self.assign_mixture_value(name="template_beta", mixture_weights=mix_weights)
-    self.assign_mixture_value(name="template_gamma", mixture_weights=mix_weights)
+    self.assign_mixture_value(
+        name="template_beta", mixture_weights=mix_weights)
+    self.assign_mixture_value(
+        name="template_gamma", mixture_weights=mix_weights)
     norm_input = BatchNormalization.call(self, layer_inputs, training)
 
     input_shape = layer_inputs.shape
@@ -212,8 +214,8 @@ class WeightedBatchNormalizationSeparate(WeightedMixIn, BatchNormalization):
     return tensor
 
   def get_config(self):
-    config = super(WeighedBatchNormalizationSeparate, self).get_config()
-    config['num_templates'] = self.num_templates
+    config = super(WeightedBatchNormalizationSeparate, self).get_config()
+    config["num_templates"] = self.num_templates
     return config
 
 class WeightedConv2D(WeightedMixIn, Conv2D):
@@ -270,24 +272,24 @@ class WeightedConv2D(WeightedMixIn, Conv2D):
     WeightedMixIn.__init__(self)
     Conv2D.__init__(self, **kwargs)
     self.num_templates = num_templates
-    self.add_template_variable(weight_name='kernel')
-    self.add_template_variable(weight_name='bias')
+    self.add_template_variable(weight_name="kernel")
+    self.add_template_variable(weight_name="bias")
     mixture_input_spec = InputSpec(ndim=1)
     self.input_spec = (self.input_spec, mixture_input_spec)
 
   def call(self, inputs):
     layer_inputs = inputs[0]
     mix_weights = inputs[1]
-    self.assign_mixture_value(name='kernel', mixture_weights=mix_weights)
-    self.assign_mixture_value(name='bias', mixture_weights=mix_weights)
+    self.assign_mixture_value(name="kernel", mixture_weights=mix_weights)
+    self.assign_mixture_value(name="bias", mixture_weights=mix_weights)
     output = super(WeightedConv2D, self).call(layer_inputs)
-    self.reset_value('kernel')
-    self.reset_value('bias')
+    self.reset_value("kernel")
+    self.reset_value("bias")
     return output
 
   def get_config(self):
     config = super(WeightedConv2D, self).get_config()
-    config['num_templates'] = self.num_templates
+    config["num_templates"] = self.num_templates
     return config
 
 class WeightedDepthwiseConv2D(WeightedMixIn, DepthwiseConv2D):
@@ -350,23 +352,23 @@ class WeightedDepthwiseConv2D(WeightedMixIn, DepthwiseConv2D):
     DepthwiseConv2D.__init__(self, **kwargs)
     WeightedMixIn.__init__(self)
     self.num_templates = num_templates
-    self.add_template_variable(weight_name='depthwise_kernel')
-    self.add_template_variable(weight_name='bias')
+    self.add_template_variable(weight_name="depthwise_kernel")
+    self.add_template_variable(weight_name="bias")
     mixture_input_spec = InputSpec(ndim=1)
     self.input_spec = (self.input_spec, mixture_input_spec)
 
 
   def call(self, inputs):
     layer_inputs, mix_weights = inputs
-    self.assign_mixture_value(name='depthwise_kernel',
+    self.assign_mixture_value(name="depthwise_kernel",
                               mixture_weights=mix_weights)
-    self.assign_mixture_value(name='bias', mixture_weights=mix_weights)
+    self.assign_mixture_value(name="bias", mixture_weights=mix_weights)
     output = super(WeightedDepthwiseConv2D, self).call(layer_inputs)
-    self.reset_value('depthwise_kernel')
-    self.reset_value('bias')
+    self.reset_value("depthwise_kernel")
+    self.reset_value("bias")
     return output
 
   def get_config(self):
     config = super(WeightedDepthwiseConv2D, self).get_config()
-    config['num_templates'] = self.num_templates
+    config["num_templates"] = self.num_templates
     return config

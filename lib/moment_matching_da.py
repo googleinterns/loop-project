@@ -2,73 +2,26 @@
 """
 import tensorflow as tf
 import tensorflow.keras as tkf
+from lib.uda_model import BaseDomainAdaptationModel
 
-class MomentMatchingClassifier(tkf.Model):
-  """Moments matching classifier for unsupervised domain adaptation.
+class MomentMatchingClassifier(BaseDomainAdaptationModel):
+  """Moment matching classifier for unsupervised domain adaptation.
+
+  Consists of a classifier network that is trained to perform classification on
+  the source domain, and domain disriminator that, given late features from the
+  classifier, predicts whether the features come from source or target domain.
+  The target domain mixture weights are optimized to fool the discriminator.
 
   Arguments:
   classifier: classifier model.
   target_domain: target domain name.
   num_layers: number of resblock layers in the classifier.
   """
-  def __init__(self, classifier, domains, target_domain,
-               num_layers, **args):
-    super(MomentMatchingClassifier, self).__init__(**args)
-    self.classifier = classifier
-    self.domains = domains
-    self.num_domains = len(self.domains)
-    self.target_domain = target_domain
-    if target_domain in domains:
-      self.target_domain_idx = int(self.domains.index(self.target_domain))
-    else:
-      raise ValueError("The target domain is not in the domains list.")
+  def __init__(self, *args, **kwargs):
+    super(MomentMatchingClassifier, self).__init__(*args, **kwargs)
+    self.copy_mix_weights()
 
-    self.num_layers = num_layers
-    self._input_shape = self.classifier.input_shape[0][1:]
-    self._set_feature_extractor()
-
-
-  def _set_feature_extractor(self):
-    """Sets late feature extractor of the model."""
-    cls_inputs = [tkf.Input(name="%s_in_new" % x, shape=self._input_shape)
-                  for x in self.domains]
-    new_model_out = self.classifier(cls_inputs)
-    try:
-      block = (self.classifier.get_layer("feature_extractor")
-                              .get_layer("weighted_resblock"))
-      features_output_arr = []
-      for idx in range(self.num_domains):
-        out_idx = self.num_layers * (2 * self.num_domains - idx + 1) - 1
-        outputs = block.get_output_at(out_idx)
-        features_output_arr.append(outputs)
-    except ValueError:
-      #finding the last separate batch norm block
-      feature_extr = self.classifier.get_layer("feature_extractor")
-      last_bn_name = None
-      bn_name = "weighted_res_block_separate_bn"
-      for layer in feature_extr.layers:
-        if bn_name in layer.name:
-          last_bn_name = layer.name
-
-      block = (self.classifier.get_layer("feature_extractor")
-                              .get_layer(last_bn_name))
-      features_output_arr = []
-      for idx in range(self.num_domains):
-        out_idx = 2 * self.num_domains - idx
-        outputs = block.get_output_at(out_idx)
-        features_output_arr.append(outputs)
-    self.late_features = tf.keras.Model(cls_inputs, features_output_arr)
-    # storing the target domain mixture weights
-    target_mix_weights = []
-    prefix = "%s_mix" % self.target_domain
-    for weight in self.late_features.trainable_weights:
-      if prefix in weight.name:
-        target_mix_weights.append(weight)
-    self.late_features._target_mix_weights = target_mix_weights
-
-
-  def compile(self, cl_optimizer, mm_optimizer, cl_losses, cl_loss_weights,
-              mm_loss_weight=1):
+  def compile(self, mm_optimizer, mm_loss_weight, *args, **kwargs):
     """Compiles the model.
 
     Arguments:
@@ -78,26 +31,21 @@ class MomentMatchingClassifier(tkf.Model):
     cl_loss_weights: classifier loss weights dictionary.
     mm_loss_weight: moment matching loss weights.
     """
-    super(MomentMatchingClassifier, self).compile()
-    self.classifier.compile(optimizer=cl_optimizer,
-                            loss=cl_losses,
-                            loss_weights=cl_loss_weights,
-                            metrics="acc")
+    super(MomentMatchingClassifier, self).compile(*args, **kwargs)
+    if self.classifier is not None:
+      self.classifier.compile(optimizer=self.cl_optimizer,
+                              loss=self.cl_losses,
+                              loss_weights=self.cl_loss_weights,
+                              metrics="acc")
     self.mm_optimizer = mm_optimizer
     self.mm_loss_weight = mm_loss_weight
-    loss_w = list(cl_loss_weights.values())
-    self.source_domain_idx = list([i for i in range(self.num_domains)
-                                   if loss_w[i] > 0])
-    self.num_source = len(self.source_domain_idx)
 
   def call(self, data):
     """Calls classifier on the given data.
     """
     return self.classifier(data)
 
-  def train_step(self, data):
-    images, _ = data
-    cl_results = self.classifier.train_step(data)
+  def match_moments(self, images):
     # Train the mixture weights to match the moments
     with tf.GradientTape() as tape:
       features = self.late_features(images)
@@ -106,20 +54,21 @@ class MomentMatchingClassifier(tkf.Model):
 
       # compute the moments
       mean_target = tf.reduce_mean(target_features, axis=0)
-      mean_sq_target = tf.reduce_mean(tf.math.square(target_features),
-                                      axis=0)
+      mean_sq_target = tf.reduce_mean(tf.math.square(target_features), axis=0)
       mean_source = [tf.reduce_mean(x, axis=0) for x in source_features]
       mean_sq_source = [tf.reduce_mean(tf.math.square(x), axis=0)
                         for x in source_features]
+
       mean_losses = [tf.nn.l2_loss(mean_target - x) for x in mean_source]
       mean_loss = tf.add_n(mean_losses) / self.num_source
 
       mean_sq_losses = [tf.nn.l2_loss(mean_sq_target - x)
                         for x in mean_sq_source]
       mean_sq_loss = tf.add_n(mean_sq_losses) / self.num_source
+
       cross_source_loss = 0.
       cross_source_sq_loss = 0.
-
+      # compute cross-source discances
       if self.num_source > 1:
         for i in range(self.num_source - 1):
           for j in range(i + 1, self.num_source, 1):
@@ -128,26 +77,207 @@ class MomentMatchingClassifier(tkf.Model):
             cross_source_sq_loss += tf.nn.l2_loss(
                 mean_sq_source[i] - mean_sq_source[j])
 
-      n_bin = 2. / self.num_source * (self.num_source - 1)
-      cross_source_loss *= n_bin
-      cross_source_sq_loss *= n_bin
+      binomial_c = 2. / (self.num_source * (self.num_source - 1))
+      cross_source_loss *= binomial_c
+      cross_source_sq_loss *= binomial_c
 
       total_mm_loss = self.mm_loss_weight * (mean_loss + mean_sq_loss +
                                              cross_source_loss +
                                              cross_source_sq_loss)
 
-    grads = tape.gradient(total_mm_loss, self.late_features._target_mix_weights)
+    grads = tape.gradient(total_mm_loss,
+                          self.late_features._target_mix_weights)
     self.mm_optimizer.apply_gradients(
         zip(grads, self.late_features._target_mix_weights))
+    return {"mean_loss": mean_loss,
+            "cross_source_loss": cross_source_loss}
 
-    result = cl_results
-    result["mean_loss"] = mean_loss
-    result["cross_source_loss"] = cross_source_loss
+  def train_step(self, data):
+    images, _ = data
+    cl_results = self.classifier.train_step(data)
+    mm_results = self.match_moments(images)
 
-    return result
+    return cl_results.update(mm_results)
+
+
+class MomentMatchingClassifierV2(MomentMatchingClassifier):
+  """Discriminative classifier for unsupervised domain adaptation.
+
+  Consists of a classifier network that is trained to perform classification on
+  the source domain, and domain disriminator that, given late features from the
+  classifier, predicts whether the features come from source or target domain.
+  The target domain mixture weights are optimized to fool the discriminator.
+
+  Arguments:
+  classifier: classifier model.
+  target_domain: target domain name.
+  num_layers: number of resblock layers in the classifier.
+  num_classes: number of classes.
+  """
+  def __init__(self, num_classes, *args, **kwargs):
+    super(MomentMatchingClassifierV2, self).__init__(*args, **kwargs)
+    self.num_classes = num_classes
+    self.headless = self.classifier
+    self.classifier = None
+    self._set_heads()
+    self._set_classifiers()
+    self._set_mix_weights(self.headless)
+
+  def _rename(self, inputs, name):
+    return tkf.layers.Lambda(lambda x: x, name=name)(inputs)
+
+  def _set_classifiers(self):
+    """Sets classifiers sharing the same feature extractor."""
+    cl1_inputs = [tkf.Input(name="%s_in_cl1" % x, shape=self._input_shape)
+                  for x in self.domains]
+    features = self.headless(cl1_inputs)
+    outputs_1 = []
+    for i in range(self.num_domains):
+      output = self._rename(
+          self.head_1(features[i]), "%s_out" % self.domains[i])
+      outputs_1.append(output)
+    self.classifier_1 = tf.keras.Model(cl1_inputs, outputs_1)
+
+    cl2_inputs = [tkf.Input(name="%s_in_cl2" % x, shape=self._input_shape)
+                  for x in self.domains]
+    features = self.headless(cl2_inputs)
+    outputs_2 = []
+    for i in range(self.num_domains):
+      output = self._rename(
+          self.head_2(features[i]), "%s_out" % self.domains[i])
+      outputs_2.append(output)
+    self.classifier_2 = tf.keras.Model(cl2_inputs, outputs_2)
+
+  def _set_heads(self):
+    """Creates two logits layers.
+    """
+    self.head_1 = tf.keras.layers.Dense(
+        self.num_classes, activation="softmax",
+        kernel_initializer="he_normal", name="head_1")
+    self.head_2 = tf.keras.layers.Dense(
+        self.num_classes, activation="softmax",
+        kernel_initializer="he_normal", name="head_2")
+
+  def compile(self, cl1_optimizer, cl2_optimizer, cl_losses,
+              cl_loss_weights, *args, **kwargs):
+    """Compiles the model.
+
+    Arguments:
+    cl_optimizer: classifier optimizer.
+    mm_optimizer: moment matching optimizer.
+    cl_losses: classifier losses dictionary.
+    cl_loss_weights: classifier loss weights dictionary.
+    mm_loss_weight: moment matching loss weights.
+    """
+    super(MomentMatchingClassifierV2, self).compile(
+        cl_optimizer=cl1_optimizer,
+        cl_losses=cl_losses,
+        cl_loss_weights=cl_loss_weights,
+        *args, **kwargs)
+    self.classifier_1.compile(optimizer=cl1_optimizer,
+                              loss=cl_losses,
+                              loss_weights=cl_loss_weights,
+                              metrics="acc")
+    self.classifier_2.compile(optimizer=cl2_optimizer,
+                              loss=cl_losses,
+                              loss_weights=cl_loss_weights,
+                              metrics="acc")
+
+    self.discrepancy_loss = tf.keras.losses.MeanAbsoluteError()
+    self.min_discr_optimizer = tf.keras.optimizers.Adam(
+        learning_rate=2*1e-3)
+    self.max_discr_optimizer = tf.keras.optimizers.Adam(
+        learning_rate=2*1e-3)
+
+
+  def call(self, data):
+    """Calls classifier on the given data.
+    """
+    pred = 0.5 * (self.classifier_1(data) + self.classifier_2(data))
+    return pred
+
+  def classifier_train_step(self, data):
+    """Train step of the classifier and both heads.
+
+    Arguments:
+    data: data batch.
+    """
+    cl1_results = self.classifier_1.train_step(data)
+    cl2_results = self.classifier_2.train_step(data)
+
+    results = {}
+    for score in cl1_results:
+      results["cl1_%s" % score] = cl1_results[score]
+      results["cl2_%s" % score] = cl2_results[score]
+    return results
+
+  def maximize_discrepancy(self, images):
+    """ Maximizes target prediction dixrepancy by training heads.
+    """
+    with tf.GradientTape() as tape:
+      features = self.headless(images)
+      pred_1 = self.head_1(features[self.target_domain_idx])
+      pred_2 = self.head_2(features[self.target_domain_idx])
+      discrepancy = self.discrepancy_loss(pred_1, pred_2)
+      total_loss = -1. * discrepancy
+
+    trainable_vars = (self.head_1.trainable_variables +
+                      self.head_2.trainable_variables)
+    gradients = tape.gradient(total_loss, trainable_vars)
+    self.max_discr_optimizer.apply_gradients(zip(gradients, trainable_vars))
+    return discrepancy
+
+  def minimize_discrepancy(self, images):
+    """ Minimizes target prediction dixrepancy by training mixture weights.
+    """
+    with tf.GradientTape() as tape:
+      features = self.headless(images)
+      pred_1 = self.head_1(features[self.target_domain_idx])
+      pred_2 = self.head_2(features[self.target_domain_idx])
+      discrepancy = self.discrepancy_loss(pred_1, pred_2)
+      total_loss = discrepancy
+
+    trainable_vars = self.headless._target_mix_weights
+    gradients = tape.gradient(total_loss, trainable_vars)
+    self.min_discr_optimizer.apply_gradients(zip(gradients, trainable_vars))
+    return discrepancy
+
+
+  def train_step(self, data):
+    images, _ = data
+    # train the classifier on source domains
+    out_results = self.classifier_train_step(data)
+    # min-max the target prediction discrepancy
+    max_discr = self.maximize_discrepancy(images)
+    min_discr = self.minimize_discrepancy(images)
+    out_results.update({
+        "max_discrepancy": max_discr,
+        "min_discrepancy": min_discr})
+    # minimize moments distance
+    mm_results = self.match_moments(images)
+    out_results.update(mm_results)
+    return out_results
 
   def test_step(self, data):
-    return self.classifier.test_step(data)
+    cl1_res = self.classifier_1.test_step(data)
+    cl2_res = self.classifier_2.test_step(data)
+    result = {}
+    for score in cl1_res:
+      result["cl1_%s" % score] = cl1_res[score]
+      result["cl2_%s" % score] = cl2_res[score]
+    return result
 
-def evaluate(self, *args, **kwargs):
-  return self.classifier.evaluate(*args, **kwargs)
+  def evaluate(self, *args, **kwargs):
+    """ Classifiers evaluation."""
+    cl1_res = self.classifier_1.evaluate(*args, **kwargs)
+    cl2_res = self.classifier_2.evaluate(*args, **kwargs)
+    n_res = len(cl1_res)
+    if isinstance(cl1_res, dict):
+      result = {}
+      for score in cl1_res:
+        result["cl1_%s" % score] = cl1_res[score]
+        result["cl2_%s" % score] = cl2_res[score]
+      return result
+    # if the result is a list
+    result = [0.5 * (cl1_res[i] + cl2_res[i]) for i in range(n_res)]
+    return result
