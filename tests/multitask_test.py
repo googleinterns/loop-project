@@ -88,3 +88,7 @@ class MultitaskTest(tf.test.TestCase):
       for layer in range(5):
         mix_name = "%s_mix_%s" % (ds, str(layer))
         self.assertIsInstance(model.get_layer(mix_name), wblock.MixtureWeight)
+
+if __name__ == '__main__':
+  unittest.main(argv=['first-arg-is-ignored'], exit=False)
+

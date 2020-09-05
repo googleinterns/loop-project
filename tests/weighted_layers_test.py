@@ -1,7 +1,7 @@
 import unittest
 import numpy as np
 import tensorflow as tf
-from lib.weighted_layers_v2 import *
+import lib.weighted_layers_v2 as wl
 from lib.weighted_resblock import MixtureWeight
 
 class WeightedConv2DTest(tf.test.TestCase):
@@ -28,17 +28,16 @@ class WeightedConv2DTest(tf.test.TestCase):
 
   def _create_default_w_conv(self):
     """Creates an instance of WeightedConv2D with dedault parameters."""
-    return WeightedConv2D(filters=self.filters, activation=self.activation,
-                          padding=self.padding, kernel_size=self.kernel_size,
-                          num_templates=self.num_templates,
-                          kernel_initializer=self.kernel_init,
-                          bias_initializer=self.bias_init)
+    return wl.WeightedConv2D(
+        filters=self.filters, activation=self.activation, padding=self.padding,
+        kernel_size=self.kernel_size, num_templates=self.num_templates,
+        kernel_initializer=self.kernel_init, bias_initializer=self.bias_init)
 
   def _get_default_inputs(self, in_shape):
     """returns default layer inputs."""
     layer_inputs = tf.Variable(np.random.rand(*in_shape), dtype=tf.float32)
 
-    return [layer_inputs, self.xi(None)]
+    return [layer_inputs, self.xi(None)[0]]
 
   def test_output_shape(self):
     """checks if the shape of the output tensor is correct."""
@@ -101,17 +100,16 @@ class WeightedDepthwiseConv2DTest(tf.test.TestCase):
 
   def _create_default_depth_conv(self):
     """Creates a WeightedDepthwiseConv2D instance with default parameters."""
-    return WeightedDepthwiseConv2D(
+    return wl.WeightedDepthwiseConv2D(
         depth_multiplier=self.depth_multiplier, activation=self.activation,
         padding=self.padding, kernel_size=self.kernel_size,
-        num_templates=self.num_templates,
-        depthwise_initializer=self.kernel_init,
-        bias_initializer=self.bias_init)
+        num_templates=self.num_templates, bias_initializer=self.bias_init,
+        depthwise_initializer=self.kernel_init)
 
   def _get_default_inputs(self, in_shape):
     """returns default layer inputs."""
     layer_inputs = tf.Variable(np.random.rand(*in_shape), dtype=tf.float32)
-    return [layer_inputs, self.xi(None)]
+    return [layer_inputs, self.xi(None)[0]]
 
   def test_output_shape(self):
     """checks if the shape of the output tensor is correct."""
@@ -151,10 +149,10 @@ class WeightedBatchNormalizationTest(tf.test.TestCase):
     """Sets default parameters."""
     self.num_templates = 10
     self.input_channels = 40
-    self.gamma_template = np.random.rand(self.num_templates,
-                                         self.input_channels).astype(np.float32)
-    self.beta_template = np.random.rand(self.num_templates,
-                                        self.input_channels).astype(np.float32)
+    self.gamma_template = np.random.rand(
+        self.num_templates, self.input_channels).astype(np.float32)
+    self.beta_template = np.random.rand(
+        self.num_templates, self.input_channels).astype(np.float32)
     self.beta_init = tf.constant_initializer(self.beta_template)
     self.gamma_init = tf.constant_initializer(self.gamma_template)
     self.xi_initializer = tf.random_uniform_initializer(minval=0.0, maxval=1.0)
@@ -165,22 +163,22 @@ class WeightedBatchNormalizationTest(tf.test.TestCase):
     """checks if the output shape is same as input shape."""
     input_shape = (256, 16, 16, self.input_channels)
     inputs = tf.random.normal(input_shape)
-    bn = WeightedBatchNormalizationSeparate(num_templates=self.num_templates,
-                                            gamma_initializer=self.gamma_init,
-                                            beta_initializer=self.beta_init)
-    outputs = bn([inputs, self.xi(None)], training=True)
+    bn = wl.WeightedBatchNormalizationSeparate(
+        num_templates=self.num_templates, gamma_initializer=self.gamma_init,
+        beta_initializer=self.beta_init)
+    outputs = bn([inputs, self.xi(None)[0]], training=True)
     self.assertAllEqual(input_shape, outputs.shape)
 
   def test_output_moments(self):
     """checks if the output moments match to the mixture of moments."""
     input_shape = (256, 16, 16, self.input_channels)
     inputs = tf.random.normal(input_shape, mean=2.5, stddev=8.0)
-    bn = WeightedBatchNormalizationSeparate(num_templates=self.num_templates,
-                                            gamma_initializer=self.gamma_init,
-                                            beta_initializer=self.beta_init)
-    outputs = bn([inputs, self.xi(None)], training=True)
-    reduction_axes = [i for i in range(len(input_shape) - 1)]
-    mean, var = nn.moments(outputs, reduction_axes)
+    bn = wl.WeightedBatchNormalizationSeparate(
+        num_templates=self.num_templates, gamma_initializer=self.gamma_init,
+        beta_initializer=self.beta_init)
+    outputs = bn([inputs, self.xi(None)[0]], training=True)
+    reduction_axes = range(len(input_shape) - 1)
+    mean, var = tf.nn.moments(outputs, reduction_axes)
     reshaped_mix_w = tf.reshape(self.xi(None), [self.num_templates, 1])
     mix_gamma = tf.reduce_sum(reshaped_mix_w * self.gamma_template, axis=0)
     mix_beta = tf.reduce_sum(reshaped_mix_w * self.beta_template, axis=0)
