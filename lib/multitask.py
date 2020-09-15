@@ -115,8 +115,8 @@ def get_losses(datasets, num_train_ds, label_smoothing=0):
   return losses, loss_weights
 
 def get_losses_and_callbacks(
-    datasets, num_tr_datasets, prefix, add_mw_callback=False,
-    train_params=training.TrainingParameters(), end_lr_coefficient=0.1):
+    datasets, num_tr_datasets, prefix, train_params, add_mw_callback=False,
+    end_lr_coefficient=0.1):
   lr_schedule = training.get_lr_schedule(
       train_params.lr, train_params.num_epochs,
       end_lr_coefficient=end_lr_coefficient)
@@ -124,9 +124,9 @@ def get_losses_and_callbacks(
       datasets, num_tr_datasets, train_params.lsmooth)
   print("Loss weights:", loss_weights)
   callbacks, ckpt = training.get_callbacks(
-      train_params.save_path, lr_schedule, prefix)
+      train_params.exp_path, lr_schedule, prefix)
   if add_mw_callback:
-    vis_path = os.path.join(train_params.save_path, "mix_vis", prefix)
+    vis_path = os.path.join(train_params.exp_path, "mix_vis", prefix)
     vis_cbk = training.VisualizeCallback(
         vis_path, domains=datasets, num_templates=train_params.num_templates,
         num_layers=train_params.num_layers, frequency=1)
@@ -349,6 +349,7 @@ def train_model(model, train_data, test_data, datasets,
       datasets=datasets, num_tr_datasets=num_train_datasets, prefix=prefix,
       end_lr_coefficient=0.2, train_params=train_params, add_mw_callback=shared)
   callbacks, lr_schedule, losses, loss_weights, ckpt = fitting_info
+  print(ckpt)
   if train_params.restore:
     training.restore_model(ckpt, model)
   # modify loss weights if target_dataset is given

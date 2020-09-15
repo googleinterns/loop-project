@@ -175,7 +175,9 @@ class TrainingParameters:
     self.num_steps = args.num_steps
     self.lsmooth = args.lsmooth
     self.lr = args.lr
+    self.name = args.name
     self.save_path = args.save_path
+    self.exp_path = os.path.join(self.save_path, self.name)
     self.ckpt_path = args.ckpt_path
     self.num_layers = args.num_blocks
     self.num_templates = args.num_templates
