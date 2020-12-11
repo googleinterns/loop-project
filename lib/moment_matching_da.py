@@ -3,6 +3,7 @@
 import tensorflow as tf
 import tensorflow.keras as tkf
 from lib.uda_model import BaseDomainAdaptationModel
+from lib import multitask as mt
 
 class MomentMatchingClassifier(BaseDomainAdaptationModel):
   """Moment matching classifier for unsupervised domain adaptation.
@@ -45,6 +46,7 @@ class MomentMatchingClassifier(BaseDomainAdaptationModel):
     """
     return self.classifier(data)
 
+
   def match_moments(self, images):
     # Train the mixture weights to match the moments
     with tf.GradientTape() as tape:
@@ -81,20 +83,22 @@ class MomentMatchingClassifier(BaseDomainAdaptationModel):
       cross_source_loss *= binomial_c
       cross_source_sq_loss *= binomial_c
 
-      total_mm_loss = self.mm_loss_weight * (mean_loss + mean_sq_loss +
-                                             cross_source_loss +
-                                             cross_source_sq_loss)
+      total_mm_loss = 0.0005 * (mean_loss + mean_sq_loss +
+                                cross_source_loss +
+                                cross_source_sq_loss)
 
     grads = tape.gradient(total_mm_loss,
-                          self.late_features._target_mix_weights)
+                          self.da_trainable_parameters)
     self.mm_optimizer.apply_gradients(
-        zip(grads, self.late_features._target_mix_weights))
-    return {"mean_loss": mean_loss,
-            "cross_source_loss": cross_source_loss}
+        zip(grads, self.da_trainable_parameters))
+    return {"mean_loss": 0.0005 * mean_loss,
+            "cross_source_loss": 0.0005 * cross_source_loss}
 
   def train_step(self, data):
     images, _ = data
-    cl_results = self.classifier.train_step(data)
+    cl_results = {}
+    if self.train_classifier:
+      cl_results = self.classifier.train_step(data)
     mm_results = self.match_moments(images)
 
     return cl_results.update(mm_results)
@@ -158,6 +162,19 @@ class MomentMatchingClassifierV2(MomentMatchingClassifier):
         self.num_classes, activation="softmax",
         kernel_initializer="he_normal", name="head_2")
 
+  def copy_mix_weights(self):
+    """Copies mixture weights from source domain to target domain.
+    """
+    if not self.copy_mix_from is None:
+      model = self.headless if self.classifier is None else self.classifier
+      _ = mt.copy_weights(
+          model,
+          source=self.copy_mix_from,
+          target=self.target_domain,
+          num_layers=self.num_layers,
+          shared=True)
+
+
   def compile(self, cl1_optimizer, cl2_optimizer, cl_losses,
               cl_loss_weights, *args, **kwargs):
     """Compiles the model.
@@ -185,9 +202,9 @@ class MomentMatchingClassifierV2(MomentMatchingClassifier):
 
     self.discrepancy_loss = tf.keras.losses.MeanAbsoluteError()
     self.min_discr_optimizer = tf.keras.optimizers.Adam(
-        learning_rate=2*1e-3)
+        learning_rate=1e-4)
     self.max_discr_optimizer = tf.keras.optimizers.Adam(
-        learning_rate=2*1e-3)
+        learning_rate=1e-4)
 
 
   def call(self, data):
@@ -219,7 +236,7 @@ class MomentMatchingClassifierV2(MomentMatchingClassifier):
       pred_1 = self.head_1(features[self.target_domain_idx])
       pred_2 = self.head_2(features[self.target_domain_idx])
       discrepancy = self.discrepancy_loss(pred_1, pred_2)
-      total_loss = -1. * discrepancy
+      total_loss = -1. * self.mm_loss_weight * discrepancy
 
     trainable_vars = (self.head_1.trainable_variables +
                       self.head_2.trainable_variables)
@@ -235,9 +252,9 @@ class MomentMatchingClassifierV2(MomentMatchingClassifier):
       pred_1 = self.head_1(features[self.target_domain_idx])
       pred_2 = self.head_2(features[self.target_domain_idx])
       discrepancy = self.discrepancy_loss(pred_1, pred_2)
-      total_loss = discrepancy
+      total_loss = self.mm_loss_weight * discrepancy
 
-    trainable_vars = self.headless._target_mix_weights
+    trainable_vars = self.da_trainable_parameters
     gradients = tape.gradient(total_loss, trainable_vars)
     self.min_discr_optimizer.apply_gradients(zip(gradients, trainable_vars))
     return discrepancy
@@ -246,7 +263,10 @@ class MomentMatchingClassifierV2(MomentMatchingClassifier):
   def train_step(self, data):
     images, _ = data
     # train the classifier on source domains
-    out_results = self.classifier_train_step(data)
+    out_results = {}
+    if self.train_classifier:
+      out_results = self.classifier_train_step(data)
+    
     # min-max the target prediction discrepancy
     max_discr = self.maximize_discrepancy(images)
     min_discr = self.minimize_discrepancy(images)

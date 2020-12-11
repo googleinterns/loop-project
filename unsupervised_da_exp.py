@@ -161,9 +161,15 @@ def get_da_model(classifier, ds_list, losses, loss_weights,
   lr_schedule: learning rate schedule function.
   da_params: domain adaptation parameters.
   """
-
   if not "mmv2" in da_params.da_mode:
     training.restore_model(da_params.classifier_ckpt, classifier)
+  common_args = {"classifier": classifier,
+		 "domains": ds_list,
+		 "target_domain": da_params.target_domain,
+ 		 "num_layers": da_params.num_layers,
+		 "copy_mix_from": da_params.copy_from,
+ 		 "finetune_in_adapter": da_params.use_in_adapter,
+		 "shared_mw_after": da_params.share_mw_after}
 
   # creating a DA model
   if "discr" in da_params.da_mode:
@@ -171,30 +177,17 @@ def get_da_model(classifier, ds_list, losses, loss_weights,
         input_shape=da_params.block_shape, num_layers=2,
         dropout=0.3, activation=tf.nn.leaky_relu)
     da_model = adv.AdversarialClassifier(
-        discriminator=discriminator, classifier=classifier,
-        domains=ds_list, target_domain=da_params.target_domain,
-        num_layers=da_params.num_layers, copy_mix_from=da_params.copy_from,
-        finetune_in_adapter=da_params.use_in_adapter,
-        shared_mw_after=da_params.share_mw_after)
+        discriminator=discriminator, **common_args)
   elif "swd" in da_params.da_mode:
     da_model = swd.SWDClassifier(
-	classifier=classifier, domains=ds_list,
-        target_domain=da_params.target_domain, num_layers=da_params.num_layers,
-        copy_mix_from=da_params.copy_from, num_projections=10000,
-        finetune_in_adapter=da_params.use_in_adapter,
-        shared_mw_after=da_params.share_mw_after)
+	num_projections=10000, **common_args)
 
   elif "mmv2" in da_params.da_mode:
     ds_info = {x: {"num_classes": da_params.num_classes} for x in ds_list}
     head_weights = restore_mmv2_classifier(classifier, ds_info, model_params,
                                            da_params.classifier_ckpt)
     da_model = mm.MomentMatchingClassifierV2(
-        classifier=classifier, domains=ds_list,
-        target_domain=da_params.target_domain,
-        num_layers=da_params.num_layers, copy_mix_from=da_params.copy_from,
-        num_classes=da_params.num_classes,
-        finetune_in_adapter=da_params.use_in_adapter,
-        shared_mw_after=da_params.share_mw_after)
+	num_classes=da_params.num_classes, **common_args)
     if not head_weights is None:
       da_model.classifier_1.get_layer("head_1").set_weights(head_weights)
       head_weights_2 = [x + tf.random.normal(x.shape, 0, 0.05)
@@ -202,12 +195,7 @@ def get_da_model(classifier, ds_list, losses, loss_weights,
       da_model.classifier_2.get_layer("head_2").set_weights(head_weights_2)
 
   elif "mm" in da_params.da_mode:
-    da_model = mm.MomentMatchingClassifier(
-        classifier=classifier, domains=ds_list,
-        target_domain=da_params.target_domain,
-        num_layers=da_params.num_layers, copy_mix_from=da_params.copy_from,
-        finetune_in_adapter=da_params.use_in_adapter,
-        shared_mw_after=da_params.share_mw_after)
+    da_model = mm.MomentMatchingClassifier(**common_args)
   else:
     raise ValueError("Given DA mode is not implemented.")
 
@@ -239,7 +227,7 @@ def train_da_model(classifier, datasets, train_ds, test_ds, num_tr_datasets,
   # Starting DA
   fitting_info = mt.get_losses_and_callbacks(
       datasets=datasets, num_tr_datasets=num_tr_datasets, prefix="DA",
-      add_mw_callback=False, end_lr_coefficient=1., train_params=train_params)
+      add_mw_callback=False, train_params=train_params)
   callbacks, lr_schedule, losses, loss_weights, ckpt = fitting_info
   # creating a DA model
 
@@ -275,7 +263,13 @@ def train_da_model(classifier, datasets, train_ds, test_ds, num_tr_datasets,
 
 
 def restore_mmv2_classifier(classifier, ds_info, model_params, ckpt_path):
-  # restore the Moment Matching classifier from the checkpoint
+  """restore the Moment Matching classifier from the checkpoint.
+     Arguments:
+     classifier: target classifier.
+     ds_info: list of dataset names.
+     model_params: parameters of the classifier.
+     ckpt_path: path to checkpoint.
+  """
   ckpt_classifier = mt.get_combined_model(
       datasets_info=ds_info, model_params=model_params, shared=True,
       share_logits=True, with_head=True, multitask=True)

@@ -29,32 +29,20 @@ def get_callbacks(save_path, lr_schedule, prefix=None):
   cp_callback = tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_path,
                                                    save_weights_only=True,
                                                    verbose=1,
-                                                   save_freq=10000)
+                                                   save_freq=5000)
   nan_callback = tf.keras.callbacks.TerminateOnNaN()
   #lrtboard_callback = LRTensorBoard(log_dir=log_path)
-  callbacks = [cp_callback, lr_reducer, lr_scheduler, tboard, nan_callback]
+  callbacks = [cp_callback, tboard, nan_callback]
   return callbacks, checkpoint_path
 
 
-def get_lr_schedule(initial_lrate, num_epochs, end_lr_coefficient=0.95):
-  """Returns a learning rate schedule function.
-
-  The learning rate schedule will have a linear decay described by
-  the following formula:
-    lr_k = initial_lrate(1 - k * end_lr_coefficient / num_epochs),
-    where k is the number of epoch.
-
-  Arguments:
-  initial_lrate: initial learning rate.
-  num_epochs: number of epochs.
-  end_lr_coefficient: the learning rate at the final epoch will be
-    equal to initial_lrate * (1 - end_lr_coefficient).
-  """
-  decay = end_lr_coefficient / (float(num_epochs) + 1e-6)
-  def lr_schedule(epoch):
-    return initial_lrate * (1 - epoch * decay)
-
-  return lr_schedule
+def get_lr_schedule(initial_lrate, num_epochs, num_steps,
+		    end_lr_coefficient=0.95):
+  decay = tf.keras.optimizers.schedules.PolynomialDecay(
+      initial_lrate, num_epochs * num_steps,
+      end_learning_rate=initial_lrate * end_lr_coefficient,
+      power=1.0, cycle=False)
+  return decay
 
 def visualize_mixture_weights(model, domains, num_templates, num_layers):
   """ Returns a matrix of mixture weights for visualization.
@@ -72,7 +60,10 @@ def visualize_mixture_weights(model, domains, num_templates, num_layers):
   for domain in domains:
     mix_w_arr = np.zeros((num_layers, num_templates))
     for i in range(num_layers):
-      mw = model.get_layer("%s_mix_%s" % (domain, i))
+      try:
+        mw = model.get_layer("shared_mix_%s" % (i))
+      except:
+        mw = model.get_layer("%s_mix_%s" % (domain, i))
       if len(mw.trainable_variables) == 0:
         mw_weights = mw.non_trainable_variables[0]
       else:
@@ -137,11 +128,12 @@ def restore_model(ckpt_path, model):
   """ Restore model weight from the checkpoint.
   """
   try:
-    model.load_weights(ckpt_path)
+    model.load_weights(ckpt_path).expect_partial()
     print("Restored weights from %s" % ckpt_path)
+    return True
   except ValueError:
     print("could not restore weights from %s" % ckpt_path)
-    pass
+    return False
 
 
 @dataclass
@@ -157,9 +149,10 @@ class TrainingParameters:
   name: experiment name.
   ckpt_path: checkpoint path.
   """
-  save_path: str = "./"
+  save_path: str = "./experiments/"
   name: str = "default"
   num_epochs: int = 100
+  start_epoch: int = 0
   num_steps: int = 1000
   lr: float = 2*1e-3
   lsmooth: float = 0.
@@ -168,10 +161,14 @@ class TrainingParameters:
   num_templates: int = 4
   batch_size: int = 32
   restore: bool = False
+  copy_weights: bool = False
+  exp_path: str = os.path.join(save_path, name)
 
   def init_from_args(self, args):
     """Initializes the fields from arguments."""
     self.num_epochs = args.num_epochs
+    self.start_epoch = args.start_epoch
+    assert self.start_epoch <= self.num_epochs
     self.num_steps = args.num_steps
     self.lsmooth = args.lsmooth
     self.lr = args.lr
@@ -183,4 +180,5 @@ class TrainingParameters:
     self.num_templates = args.num_templates
     self.batch_size = args.batch_size
     self.restore = args.restore > 0
+    self.copy_weights = args.copy_weights > 0
 
