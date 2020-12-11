@@ -1,6 +1,9 @@
+""" Code for the multitask experiments with the isometric/compositional model.
+"""
+
 import os
-from lib import multitask as mt
 from utils import args_util, training
+from lib import multitask as mt
 from lib.resnet_parameters import ResNetParameters
 
 
@@ -22,9 +25,11 @@ def main():
   model_params = ResNetParameters()
   model_params.init_from_args(args)
   model_params.with_head = False
+  sharing_mw_index = None if args.share_mw_after < 0 else args.share_mw_after
   combined_model = mt.get_combined_model(
       datasets_info=ds_info, model_params=model_params, with_head=True,
-      shared=args.shared > 0, share_logits=args.share_logits > 0)
+      shared=args.shared > 0, share_logits=args.share_logits > 0,
+      share_mw_after=sharing_mw_index, multitask=args.multitask_resnet > 0)
   combined_model.summary()
 
   # pretrain the model
@@ -32,7 +37,8 @@ def main():
   train_params.init_from_args(args)
   combined_model = mt.train_model(
       combined_model, train_data=ds_train, test_data=ds_test, datasets=ds_list,
-      finetune_mode=None, prefix="Pretrained", target_dataset=None,
+      finetune_mode=None, prefix="Pretrained",
+      target_dataset=args.target_dataset, finetuning=False,
       num_train_datasets=args.num_datasets, train_params=train_params,
       shared=args.shared > 0)
 
@@ -49,13 +55,15 @@ def main():
   if args.num_epochs_finetune > 0:
     train_params = training.TrainingParameters()
     train_params.init_from_args(args)
+    train_params.restore = False
     train_params.lr *= 0.5
     train_params.num_epochs = args.num_epochs_finetune
     finetuned_model = mt.train_model(
         combined_model, train_data=ds_train, test_data=ds_test,
         datasets=ds_list, finetune_mode=args.finetune_mode, prefix="Finetuned",
         target_dataset=args.target_dataset, train_params=train_params,
-        num_train_datasets=args.num_datasets, shared=args.shared > 0)
+        num_train_datasets=args.num_datasets, shared=args.shared > 0,
+        finetuning=True)
     # evaluating the finetuned model
     scores = finetuned_model.evaluate(ds_test)
     mt.write_scores(ds_list, scores, results_file, f_mode="a+",

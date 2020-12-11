@@ -238,7 +238,7 @@ def get_da_datasets(name, image_size, data_dir, split=0.2, augment=False):
   split: validation split."""
 
   if "office" in name:
-    datasets_dict = get_office_datasets(op.join(data_dir, "office"), split)
+    datasets_dict = get_office_datasets(op.join(data_dir, name), split)
   elif "domain_net" in name:
     datasets_dict = get_domain_net_datasets(op.join(data_dir, name), split)
   else:
