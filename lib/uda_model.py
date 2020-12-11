@@ -16,12 +16,17 @@ class BaseDomainAdaptationModel(tkf.Model):
   None, the mixture weights will not be copied.
   """
   def __init__(self, classifier, domains, target_domain,
-               num_layers, copy_mix_from=None, **args):
+               num_layers, copy_mix_from=None,
+               finetune_in_adapter=False, shared_mw_after=-1, **args):
     super(BaseDomainAdaptationModel, self).__init__(**args)
     self.classifier = classifier
     self.domains = domains
     self.num_domains = len(self.domains)
     self.target_domain = target_domain
+    if shared_mw_after > 0:
+      self.shared_mw_after = shared_mw_after
+    else:
+      self.shared_mw_after = num_layers
     if target_domain in domains:
       self.target_domain_idx = int(self.domains.index(self.target_domain))
     else:
@@ -34,6 +39,17 @@ class BaseDomainAdaptationModel(tkf.Model):
       raise ValueError("copy_mix_from domain is not in the list.")
     else:
       self.copy_mix_from = copy_mix_from
+    self.train_classifier = True
+    self.set_da_parameters(finetune_in_adapter)
+
+  def set_da_parameters(self, use_in_adapter=False):
+    self.da_trainable_parameters = self.late_features._target_mix_weights
+    if use_in_adapter:
+      in_adapter = (self.classifier.get_layer("feature_extractor")
+                    .get_layer("in_adapter"))
+      self.da_trainable_parameters += in_adapter.trainable_weights
+
+
 
   def _set_mix_weights(self, model):
     """Sets mixture weights list as a model field.
@@ -42,11 +58,15 @@ class BaseDomainAdaptationModel(tkf.Model):
     model: model to which the mixture weights field will be added.
     """
     target_mix_weights = []
-    prefix = "%s_mix" % self.target_domain
-    for weight in model.trainable_weights:
-      if prefix in weight.name:
+
+    for idx in range(self.shared_mw_after):
+      mw_layer = model.get_layer("%s_mix_%i" % (self.target_domain, idx))
+      for weight in mw_layer.trainable_weights:
         target_mix_weights.append(weight)
+
     model._target_mix_weights = target_mix_weights
+
+
 
   def _set_feature_extractor(self):
     """Sets late feature extractor of the model."""
@@ -66,17 +86,21 @@ class BaseDomainAdaptationModel(tkf.Model):
       feature_extr = self.classifier.get_layer("feature_extractor")
       last_bn_name = None
       bn_name = "weighted_res_block_separate_bn"
+      multibn_name = "weighted_multitask_res_block"
       for layer in feature_extr.layers:
-        if bn_name in layer.name:
+        if bn_name in layer.name or multibn_name in layer.name:
           last_bn_name = layer.name
 
       block = (self.classifier.get_layer("feature_extractor")
                               .get_layer(last_bn_name))
-      features_output_arr = []
-      for idx in range(self.num_domains):
-        out_idx = 2 * self.num_domains - idx
-        outputs = block.get_output_at(out_idx)
-        features_output_arr.append(outputs)
+      if multibn_name in last_bn_name:
+        features_output_arr = block.get_output_at(2)
+      else:
+        features_output_arr = []
+        for idx in range(self.num_domains):
+          out_idx = 2 * self.num_domains - idx
+          outputs = block.get_output_at(out_idx)
+          features_output_arr.append(outputs)
     self.late_features = tf.keras.Model(cls_inputs, features_output_arr)
     # storing the target domain mixture weights
     self._set_mix_weights(self.late_features)
@@ -84,12 +108,13 @@ class BaseDomainAdaptationModel(tkf.Model):
   def copy_mix_weights(self):
     """Copies mixture weights from source domain to target domain.
     """
-    self.classifier = mt.copy_weights(
-        self.classifier,
-        source=self.copy_mix_from,
-        target=self.target_domain,
-        num_layers=self.num_layers,
-        shared=True)
+    if not self.copy_mix_from is None:
+      self.classifier = mt.copy_weights(
+          self.classifier,
+          source=self.copy_mix_from,
+          target=self.target_domain,
+          num_layers=self.num_layers,
+          shared=True)
 
   def compile(self, cl_optimizer, cl_losses, cl_loss_weights):
     """Compiles the model.

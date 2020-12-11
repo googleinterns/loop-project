@@ -1,3 +1,6 @@
+""" Weighted ResBlock for compositional networks.
+"""
+
 import tensorflow as tf
 from tensorflow.python.keras import regularizers
 from lib import weighted_layers_v2 as wl
@@ -205,9 +208,6 @@ class WeightedResBlockSeparateBN(tf.keras.layers.Layer):
     x += layer_input
     return x
 
-  def get_config(self):
-    return super(WeightedResBlockSeparateBN, self).get_config()
-
 
 
 class WeightedResBlock(tf.keras.Model):
@@ -368,3 +368,66 @@ class MixtureWeight(tf.keras.layers.Layer):
     config = super(MixtureWeight, self).get_config()
     config.update({"num_templates": self.num_templates})
     return config
+
+
+class WeightedMultitaskResBlock(tf.keras.layers.Layer):
+  """ Weighted ResBlock with separate batch normalization for each task/domain.
+
+  Arguments:
+  resblock: WeightedResBlock object.
+  domain_list: list of domain names.
+  """
+  def __init__(self, resblock, domain_list, **kwargs):
+    super(WeightedMultitaskResBlock, self).__init__(**kwargs)
+    if not isinstance(resblock, WeightedResBlock):
+      raise TypeError("resblock should be a WeightedResBlock class instance.")
+
+    self.resblock = resblock
+    self.domain_list = domain_list
+    self.num_domains = len(self.domain_list)
+    self.bn1 = []
+    self.bn2 = []
+    self.bn3 = []
+    for ds in domain_list:
+      self.bn1.append(tf.keras.layers.BatchNormalization(
+          center=False, scale=False, name="bn1_%s" % ds))
+      self.bn2.append(tf.keras.layers.BatchNormalization(
+          center=False, scale=False, name="bn2_%s" % ds))
+      self.bn3.append(tf.keras.layers.BatchNormalization(
+          center=False, scale=False, name="bn3_%s" % ds))
+
+
+  def build(self, input_shape):
+    super(WeightedMultitaskResBlock, self).build(input_shape)
+    self.resblock.build([input_shape[0][0], input_shape[1][0]])
+
+
+  def call(self, inputs, training=None):
+    """Calls task-specific batch normalization between resblock operations.
+    """
+    layer_input, mix_weights = inputs
+    outputs = []
+    for idx in range(self.num_domains):
+      x = self.resblock.conv1([layer_input[idx], mix_weights[idx]])
+      x = self.bn1[idx](x, training)
+      x = self.resblock.bn1([x, mix_weights[idx]], training)
+      x = self.resblock.activation(x)
+
+      x = self.resblock.conv2([x, mix_weights[idx]])
+      x = self.bn2[idx](x, training)
+      x = self.resblock.bn2([x, mix_weights[idx]], training)
+      x = self.resblock.activation(x)
+
+      x = self.resblock.conv3([x, mix_weights[idx]])
+      x = self.bn3[idx](x, training)
+      x = self.resblock.bn3([x, mix_weights[idx]], training)
+      x += layer_input[idx]
+      outputs.append(x)
+    return outputs
+
+  def get_config(self):
+    config = super(WeightedMultitaskResBlock, self).get_config()
+    config.update({"num_templates": self.resblock.num_templates})
+    config.update({"num_domains": self.num_domains})
+    return config
+
